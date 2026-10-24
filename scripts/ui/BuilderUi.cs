@@ -50,7 +50,9 @@ public partial class BuilderUi : Control
         _route.SetPressedNoSignal(route);
         _title.Text = route ? "深空航图" : ship ? "舰船设计" : "行星工厂";
         _subtitle.Text = route ? "轨道层 / 扇区 01" : ship ? "轨道船坞 / 种子蓝图 01" : "已登录大型行星 / 赤道据点";
-        _resources.Text = $"铁质 {world.Resources["iron"]:0}    合金 {world.Resources["alloy"]:0}    挥发物 {world.Resources["volatile"]:0}    晶体 {world.Resources["crystal"]:0}";
+        _resources.Text = ship
+            ? $"舰船蓝图  {world.ShipGraph.Modules.Count} 模块    舰体 {metrics.Hull:0}    连接 {world.ShipGraph.GetOperationalModuleIds().Count}/{world.ShipGraph.Modules.Count}"
+            : $"铁质 {world.Resources["iron"]:0}    合金 {world.Resources["alloy"]:0}    挥发物 {world.Resources["volatile"]:0}    晶体 {world.Resources["crystal"]:0}";
         _clock.Text = $"{(world.Paused ? "已暂停" : "运行")}  {world.TimeScale:0.00}×  /  {TimeSpan.FromSeconds(world.Elapsed):mm\\:ss}";
         _pause.Text = world.Paused ? "继续 [P]" : "暂停 [P]";
         _library.Visible = !route;
@@ -60,15 +62,15 @@ public partial class BuilderUi : Control
         var order = ship ? ShipOrder : FactoryOrder;
         _library.Position = ship ? new Vector2(24, 488) : new Vector2(1026, 96);
         _library.Size = ship ? new Vector2(982, 128) : new Vector2(230, 518);
-        _inspection.Position = ship ? new Vector2(24, 350) : new Vector2(24, 430);
-        _inspection.Size = ship ? new Vector2(282, 120) : new Vector2(282, 160);
+        _inspection.Position = ship ? new Vector2(1026, 96) : new Vector2(24, 430);
+        _inspection.Size = ship ? new Vector2(230, 400) : new Vector2(282, 160);
         _event.Position = ship ? new Vector2(334, 456) : new Vector2(334, 586);
         _palette.Position = ship ? new Vector2(10, 52) : new Vector2(10, 68);
         _palette.Size = ship ? new Vector2(962, 70) : new Vector2(210, 248);
         _palette.HorizontalScrollMode = ship ? ScrollContainer.ScrollMode.Auto : ScrollContainer.ScrollMode.Disabled;
         _palette.VerticalScrollMode = ship ? ScrollContainer.ScrollMode.Disabled : ScrollContainer.ScrollMode.Auto;
         _paletteContent.CustomMinimumSize = ship
-            ? new Vector2(Math.Max(962, order.Count * 70 + 12), 70)
+            ? new Vector2(Math.Max(962, order.Length * 70 + 12), 70)
             : new Vector2(202, 600);
         _detailTitle.Visible = !ship;
         _detail.Visible = !ship;
@@ -95,18 +97,20 @@ public partial class BuilderUi : Control
         var heat = ship || route ? metrics.Heat : world.CurrentHeat;
         var heatCapacity = ship || route ? Math.Max(12, metrics.Cooling * 3) : world.HeatCapacity;
         _stats.Text = ship || route
-            ? $"质量 {metrics.Mass:0}    推力 {metrics.Thrust:0}    火力 {metrics.Damage:0}    护盾 {metrics.Shield:0}" + (world.ShipReady ? "    舰船已装配" : world.ShipAssemblyQueued ? $"    装配 {world.ShipAssemblyProgress:P0}" : "    蓝图待装配")
+            ? $"质量 {metrics.Mass:0}    推力 {metrics.Thrust:0}    火力 {metrics.Damage:0}    护盾 {metrics.Shield:0}    控制 {metrics.Control:0}    散热 {metrics.Cooling:0}" + (world.ShipReady ? "    舰船已装配" : world.ShipAssemblyQueued ? $"    装配 {world.ShipAssemblyProgress:P0}" : "    蓝图待装配")
             : $"供电 {metrics.Generation:0.#}/{metrics.Consumption:0.#}    热量 {heat:0.#}/{heatCapacity:0.#}    仓储 {world.StorageUsed:0}/{world.StorageCapacity:0}";
         var disconnected = _main.ActiveGraphForUi.Modules.Count - _main.ActiveGraphForUi.GetOperationalModuleIds().Count;
         var warning = disconnected > 0 || heat > heatCapacity || metrics.Generation < metrics.Consumption;
         var assemblyNotice = ship && !world.ShipReady;
         _inspection.Visible = !route && (instance is not null || warning || assemblyNotice) && !_comms.Visible;
-        _inspectTitle.Text = assemblyNotice ? "装配坞" : instance is null ? "系统警报" : definition.Label;
+        _inspectTitle.Text = ship ? "舰船数据" : assemblyNotice ? "装配坞" : instance is null ? "系统警报" : definition.Label;
         var reason = disconnected > 0 ? $"{disconnected} 个模块断开 · 重新连接核心"
             : heat > heatCapacity ? "热量过高 · 增加散热设备"
             : metrics.Generation < metrics.Consumption ? "供电不足 · 检查发电与储能"
             : "连接正常 · 模块已接入";
-        _inspectBody.Text = assemblyNotice
+        _inspectBody.Text = ship
+            ? $"核心连接 {world.ShipGraph.GetOperationalModuleIds().Count}/{world.ShipGraph.Modules.Count}\n质量 {metrics.Mass:0}\n舰体 {metrics.Hull:0} · 护盾 {metrics.Shield:0}\n推力 {metrics.Thrust:0} · 转向 {metrics.Control:0}\n火力 {metrics.Damage:0} · 散热 {metrics.Cooling:0}\n\n{(assemblyNotice ? (world.ShipAssemblyQueued ? $"装配中 {world.ShipAssemblyProgress:P0}" : "蓝图已修改，等待装配") : "舰船已装配，可直接试航")}"
+            : assemblyNotice
             ? world.ShipAssemblyQueued
                 ? $"装配进度 {world.ShipAssemblyProgress:P0}\n已投入铁质 {world.ShipAssemblyIronCost:0}、合金 {world.ShipAssemblyAlloyCost:0}\n世界时间推进时继续装配，暂停会冻结。"
                 : $"蓝图已修改，等待装配。\n预计投入铁质 {world.ShipAssemblyIronCost:0}、合金 {world.ShipAssemblyAlloyCost:0}\n点击底部“装配舰船”开始。"
