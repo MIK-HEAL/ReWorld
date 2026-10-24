@@ -221,6 +221,27 @@ public static class ModularShipVisual
         var flameColor = spec.ThrusterColor.Lerp(spec.ThrusterColor1, Mathf.Clamp(activity, 0, 1));
         flameColor.A *= Mathf.Clamp(activity, 0, 1);
         canvas.DrawColoredPolygon(flame, flameColor);
+
+        // 白色烟雾粒子轨迹（对齐 Reassembly 排气尾迹：白烟小圆点沿排气方向扩散淡出）。
+        var exhaust = Vector2.Left.Rotated(angle);
+        var side = exhaust.Rotated(Mathf.Pi * 0.5f);
+        var smoke = spec.ThrusterColor.Lerp(Colors.White, 0.75f);
+        var time = Time.GetTicksMsec() * 0.001f;
+        var particleCount = 10 + Mathf.RoundToInt(Mathf.Clamp(activity, 0, 1) * 14);
+        var trailLength = spec.Radius * (1.6f + 2.4f * activity);
+        for (var i = 0; i < particleCount; i++)
+        {
+            // 每个粒子按自身相位 0→1 走完轨迹；时间偏移错开形成连续烟带。
+            var phase = Mathf.PosMod(time * (0.55f + activity * 0.9f) + i * 0.618f + spec.NumId * 0.037f, 1.0f);
+            var wobble = Mathf.Sin(time * 3.1f + i * 2.17f + spec.NumId) * width * (0.25f + phase * 0.9f);
+            var point = center + nozzle.Rotated(angle) + exhaust * (trailLength * phase) + side * wobble;
+            // 烟雾随存续膨胀、淡出，但前半段保持较高不透明度以保证可见。
+            var fade = (1.0f - phase) * (1.0f - phase) * Mathf.Clamp(activity * 1.6f, 0, 1);
+            var color = smoke;
+            color.A *= fade;
+            var radius = width * (0.10f + phase * 0.16f);
+            canvas.DrawCircle(point, Mathf.Max(1.2f, radius), color);
+        }
     }
 
     private static void DrawShrouds(CanvasItem canvas, ShipShapeLibrary.ShapeSpec spec, Vector2 center, float angle,
