@@ -83,6 +83,18 @@ public partial class MainNavigationChecks : Node
             CheckPage(universe, true);
             CheckPage(builder, false);
             Check(main.GetChildCount() == 2, "Removed shortcuts never create factory, route or test pages");
+            await Press(Key.J);
+            Check(universe.ChartOpen, "J opens the star chart in flight");
+            await Press(Key.M);
+            CheckPage(builder, true);
+            Check(!universe.ChartOpen, "M closes the navigation overlay before editing");
+            await Press(Key.M);
+            Check(universe.BeginWarp(Vector2I.Right), "Shared ship can power its installed warp engine");
+            await Press(Key.M);
+            CheckPage(universe, true);
+            CheckPage(builder, false);
+            await Press(Key.Escape);
+            Check(universe.Warp.State == WarpDrive.Phase.Ready, "Esc cancels charging through Main input routing");
 
             var factory = new FactoryModuleGraph();
             Check(FactoryModuleGraph.Definitions.Keys.OrderBy(k => k).SequenceEqual(

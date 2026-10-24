@@ -28,7 +28,7 @@ public sealed class UniverseTraffic
         var ship = new ModularShip();
         var core = ship.AddBlock("core", Vector2.Zero, 0);
         // Radial branches use the same edge-port connection model as the editor.
-        for (var p = 0; p < core.Spec.Ports.Count; p++)
+        foreach (var p in new[] { 0, 2, 4, 5 })
         {
             var block = Attach(ship, core, p, "hull", 2);
             for (var i = 0; i < 3; i++) block = Attach(ship, block, 0, i == 2 ? "reactor" : "hull", 2);
@@ -60,6 +60,14 @@ public sealed class UniverseTraffic
     {
         var ship = new ModularShip();
         ship.SeedReferenceShip();
+        if (name == "联航运输舰")
+        {
+            var cannon = ship.Blocks.First(b => b.ShapeId == "cannon");
+            var bow = ship.GetConnections().First(pair => pair.A == cannon || pair.B == cannon);
+            var host = bow.A == cannon ? bow.B : bow.A;
+            ship.RemoveBlock(cannon);
+            Attach(ship, host, 0, "cargo", 4);
+        }
         var vessel = new Vessel { Name = name, Ship = ship, Anchor = anchor, Position = position,
             PreviousPosition = position, Escort = escort, Radius = ship.BoundingRadius() };
         vessel.Profile = ShipFlightController.Capture(ship);

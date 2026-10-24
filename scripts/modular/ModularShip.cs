@@ -523,6 +523,7 @@ public sealed class ModularShip
         AttachTo(lower, 2, "thruster", 0);
         AttachTo(bow, 0, "cannon", 2);
         AttachTo(bow, 3, "gyro", 1);
+        AttachTo(bow, 1, "hyperdrive", 3);
         Changed?.Invoke();
     }
 

@@ -97,7 +97,7 @@ public partial class UniverseView : Node2D
         _visualPlayerPosition = _playerPosition;
         _visualPlayerHeading = _playerHeading;
         _cameraPosition = _playerPosition;
-        RenderingServer.SetDefaultClearColor(new Color("#04070d"));
+        RenderingServer.SetDefaultClearColor(new Color("#121b24"));
         InitializeWorldServices();
         RefreshVisibleBodies();
         ResumeFlight();
@@ -543,72 +543,62 @@ public partial class UniverseView : Node2D
 
     private void DrawHud()
     {
-        // 顶部坐标与速度信息。
-        DrawRect(new Rect2(new Vector2(0, 0), new Vector2(ViewWidth, 70.0f)), new Color("#050c13", 0.94f));
-        DrawLine(new Vector2(0, 69), new Vector2(ViewWidth, 69), new Color("#315260"), 1.0f);
-        DrawString(_font, new Vector2(16, 17), "REWORLD // STARFORGE FRONTIER", HorizontalAlignment.Left, -1, 10, new Color("#77d6dc"));
         var sector = UniverseGenerator.WorldToSector(_playerPosition);
         var systemCell = UniverseGenerator.WorldToSystemCell(_playerPosition);
         var systemCenter = UniverseGenerator.SystemCenter(systemCell);
         var location = _playerPosition.DistanceTo(systemCenter) <= UniverseGenerator.SystemRadius
-            ? UniverseGenerator.SystemName(systemCell) : "星际空域";
-        DrawString(_font, new Vector2(16, 43), $"{location}   扇区 [{sector.X}, {sector.Y}]   坐标 ({_playerPosition.X:0}, {_playerPosition.Y:0})   速度 {_playerVelocity.Length():0}   缩放 {_cameraZoom:P0}",
-            HorizontalAlignment.Left, -1, 13, new Color("#c7d8dc"));
+            ? UniverseGenerator.SystemName(systemCell) : "INTERSTELLAR DEEP";
 
-        // 最近天体提示。
-        if (_nearestBody is not null)
-        {
-            var distance = _nearestBody.SurfaceDistance(_playerPosition);
-            var kindLabel = _nearestBody.Kind switch
-            {
-                UniverseGenerator.CelestialKind.Planet => "星球",
-                UniverseGenerator.CelestialKind.Station => "空间站",
-                _ => "天体",
-            };
-            DrawString(_font, new Vector2(16, 62), $"最近{kindLabel}：{_nearestBody.Name} · 距表面 {distance:0}",
-                HorizontalAlignment.Left, -1, 11, new Color("#7893a1"));
-        }
+        var topRect = new Rect2(16, 12, 540, 56);
+        ReassemblyUi.DrawChamferFrame(this, topRect, ReassemblyUi.VoidDark, ReassemblyUi.CyanMuted * 0.7f, 6.0f, true, 1.2f);
+        DrawString(_font, new Vector2(30, 30), "TELEMETRY // STARFORGE FRONTIER", HorizontalAlignment.Left, -1, 10, ReassemblyUi.CyanHighlight);
+        DrawString(_font, new Vector2(30, 52), $"{location.ToUpperInvariant()}   SEC [{sector.X},{sector.Y}]   SPD {_playerVelocity.Length():0} M/S",
+            HorizontalAlignment.Left, -1, 13, ReassemblyUi.TextWhite);
 
-        // 引力状态指示。
+        var speedRatio = Mathf.Clamp(_playerVelocity.Length() / 600.0f, 0.0f, 1.0f);
+        ReassemblyUi.DrawSegmentedMeter(this, new Vector2(370, 42), new Vector2(160, 8), speedRatio, ReassemblyUi.CyanHighlight, new Color("#0d212d"), 10, 2.0f);
+
         if (_currentGravity > 1.0f)
         {
-            var gravityLabel = _currentGravity > 400.0f ? "⚠ 强引力（难以逃逸）" : (_currentGravity > 60.0f ? "引力作用中" : "弱引力");
-            var gravityColor = _currentGravity > 400.0f ? new Color("#e8a07b") : new Color("#7bb7e8");
-            DrawString(_font, new Vector2(16, 218), $"引力 {_currentGravity:0} · {gravityLabel}",
-                HorizontalAlignment.Left, -1, 12, gravityColor);
+            var danger = _currentGravity > 400.0f;
+            var gravRect = new Rect2(16, 74, 260, 26);
+            ReassemblyUi.DrawChamferFrame(this, gravRect, ReassemblyUi.VoidDark, danger ? ReassemblyUi.DangerRed : ReassemblyUi.TacticalAmber, 4.0f, false, 1.0f);
+            var gravLabel = danger ? "HIGH GRAVITY WELL" : "GRAVITY FIELD DETECTED";
+            DrawString(_font, new Vector2(26, 91), $"{gravLabel} // {_currentGravity:0}",
+                HorizontalAlignment.Left, -1, 11, danger ? ReassemblyUi.DangerRed : ReassemblyUi.TacticalAmber);
         }
-
-        // 悬停天体名。
-        if (_hoverBodyName.Length > 0)
-        {
-            DrawString(_font, new Vector2(ViewWidth - 230, ViewHeight - 236), _hoverBodyName,
-                HorizontalAlignment.Left, -1, 14, new Color("#f4f1de"));
-        }
-
-        // 操作提示。
-        var driveHint = _pilot.Scheme == ShipFlightController.ControlScheme.Keyboard
-            ? "W/S 推进 · A/D 转向 · Q/E 横移"
-            : "WASD 移动 · 光标转向 · Q/E 横移";
-        DrawString(_font, new Vector2(16, ViewHeight - 68), $"驾驶：{_pilot.SchemeLabel} · R 切换模式",
-            HorizontalAlignment.Left, -1, 13, new Color("#83c7c0"));
-        DrawString(_font, new Vector2(16, ViewHeight - 46), $"{driveHint} · M 造舰 · H 空间站 · F 停靠",
-            HorizontalAlignment.Left, -1, 13, new Color("#6e8d9c"));
-        DrawString(_font, new Vector2(16, ViewHeight - 24), "J 星系图 / 迁跃 · 滚轮缩放 · 左键选择 · F11 全屏",
-            HorizontalAlignment.Left, -1, 12, new Color("#6e8d9c"));
 
         if (_targetBody is { } target)
         {
-            DrawRect(new Rect2(16, 76, 290, 124), new Color("#0b151f", 0.88f));
-            DrawRect(new Rect2(16, 76, 3, 124), new Color("#83c7c0"));
-            DrawString(_font, new Vector2(30, 100), target.Name, HorizontalAlignment.Left, 262, 16, new Color("#e1eceb"));
-            var kind = target.Kind == UniverseGenerator.CelestialKind.Planet ? "行星" : target.Kind == UniverseGenerator.CelestialKind.Station ? "空间站" : "天体";
-            DrawString(_font, new Vector2(30, 124), $"{kind} · 直径 {target.Radius * 2:0} · 距表面 {target.SurfaceDistance(_playerPosition):0}",
-                HorizontalAlignment.Left, 262, 12, new Color("#9bb2c3"));
+            var targetRect = new Rect2(16, 106, 310, 86);
+            ReassemblyUi.DrawChamferFrame(this, targetRect, ReassemblyUi.VoidDark, ReassemblyUi.CyanMuted * 0.7f, 6.0f, true, 1.0f);
+            DrawString(_font, new Vector2(30, 126), $"LOCKED TARGET // {target.Name.ToUpperInvariant()}", HorizontalAlignment.Left, 280, 12, ReassemblyUi.CyanHighlight);
+            var kind = target.Kind == UniverseGenerator.CelestialKind.Planet ? "PLANET" : target.Kind == UniverseGenerator.CelestialKind.Station ? "STATION" : "BODY";
+            DrawString(_font, new Vector2(30, 146), $"{kind} · R {target.Radius:0} · DIST {target.SurfaceDistance(_playerPosition):0} M",
+                HorizontalAlignment.Left, 280, 11, ReassemblyUi.TextSteel);
             var inApproach = target.Position.DistanceTo(_playerPosition) <= target.ApproachRadius;
-            DrawString(_font, new Vector2(30, 150), inApproach ? "已进入轨道接近区" : "深空航行 · 接近目标", HorizontalAlignment.Left, 262, 13, new Color("#83c7c0"));
-            DrawString(_font, new Vector2(30, 180), target.Kind == UniverseGenerator.CelestialKind.Planet ? "虚线：轨道接近范围 · 沿切向绕行" : "滚轮拉远可查看周边天体",
-                HorizontalAlignment.Left, 262, 12, new Color("#6e8d9c"));
+            DrawString(_font, new Vector2(30, 168), inApproach ? "STATUS: IN ORBITAL APPROACH" : "STATUS: CRUISE TO TARGET",
+                HorizontalAlignment.Left, 280, 11, inApproach ? ReassemblyUi.PhosphorGreen : ReassemblyUi.TextMuted);
         }
+
+        if (_hoverBodyName.Length > 0)
+        {
+            DrawString(_font, new Vector2(ViewWidth - 230, ViewHeight - 236), _hoverBodyName,
+                HorizontalAlignment.Left, -1, 13, ReassemblyUi.TextWhite);
+        }
+
+        var driveHint = _pilot.Scheme == ShipFlightController.ControlScheme.Keyboard
+            ? "W/S THRUST · A/D TURN · Q/E STRAFE"
+            : "WASD MOVE · CURSOR AIM · Q/E STRAFE";
+        DrawString(_font, new Vector2(16, ViewHeight - 44), $"PILOT [{_pilot.SchemeLabel.ToUpperInvariant()}] // {driveHint} · [R] TOGGLE SCHEME",
+            HorizontalAlignment.Left, -1, 11, ReassemblyUi.TextSteel);
+        DrawString(_font, new Vector2(16, ViewHeight - 22), "[M] SHIPYARD · [J] HYPERDRIVE · [H] DOCK STATION · [SCROLL] ZOOM",
+            HorizontalAlignment.Left, -1, 11, ReassemblyUi.CyanMuted);
+
+        Vector2? targetScreen = _targetBody is { } tb ? WorldToScreen(tb.Position) : null;
+        var screenCenter = new Vector2(ViewWidth, ViewHeight) * 0.5f;
+        ReassemblyUi.DrawFlightReticle(this, screenCenter, _playerVelocity, _playerHeading,
+            targetScreen, _targetBody?.Name ?? "", _targetBody?.SurfaceDistance(_playerPosition) ?? 0, _font);
     }
 
     private const float MiniMapSize = 200;
@@ -707,44 +697,61 @@ public partial class UniverseView : Node2D
             HorizontalAlignment.Left, 210, 12, new Color("#83c7c0"));
     }
 
+    private float _radarSweepAngle = 0.0f;
+
     private void DrawMiniMap()
     {
         var mapSize = MiniMapSize;
         var mapRect = MiniMapRect;
         var mapPos = mapRect.Position;
-        DrawRect(mapRect, new Color("#0b151f", 0.92f));
-        DrawRect(mapRect, new Color("#2d5263", 0.8f), false, 1.0f);
+        var mapCenter = mapPos + new Vector2(mapSize, mapSize) * 0.5f;
+        var radius = mapSize * 0.5f;
+
+        _radarSweepAngle = Mathf.PosMod(_radarSweepAngle + 0.04f, Mathf.Tau);
+        ReassemblyUi.DrawRadarDisk(this, mapCenter, radius, _radarSweepAngle, ReassemblyUi.CyanMuted, ReassemblyUi.CyanHighlight);
+
         DrawMiniMapGravityRanges(mapRect.Grow(-1));
 
-        // 近景显示局部，拉远时一起扩展到完整星系及周边空域。
         var mapRange = MiniMapRange;
-        var mapCenter = mapPos + new Vector2(mapSize, mapSize) * 0.5f;
-
         foreach (var body in _visibleBodies)
         {
             var delta = body.Position - _playerPosition;
             var norm = delta / mapRange;
-            var mapPoint = mapCenter + norm * (mapSize * 0.5f);
-            if (mapPoint.X < mapPos.X || mapPoint.X > mapPos.X + mapSize ||
-                mapPoint.Y < mapPos.Y || mapPoint.Y > mapPos.Y + mapSize)
-                continue;
+            var mapPoint = mapCenter + norm * radius;
+
+            var inDisk = mapPoint.DistanceSquaredTo(mapCenter) <= radius * radius;
             var dotColor = body.Kind switch
             {
-                UniverseGenerator.CelestialKind.Planet => new Color("#d68b59"),
-                UniverseGenerator.CelestialKind.Station => new Color("#7bb7e8"),
-                UniverseGenerator.CelestialKind.Star => new Color("#f2cc60"),
+                UniverseGenerator.CelestialKind.Planet => new Color("#5ad4b0"),
+                UniverseGenerator.CelestialKind.Station => ReassemblyUi.CyanHighlight,
+                UniverseGenerator.CelestialKind.Star => new Color("#ffc857"),
                 _ => new Color("#5a6878"),
             };
-            var dotRadius = Mathf.Clamp(body.Radius / mapRange * mapSize * 0.5f, 2, 16);
-            DrawCircle(mapPoint, dotRadius, dotColor);
-            if (body.Id == _targetBody?.Id)
-                DrawCircle(mapPoint, dotRadius + 3, new Color("#83c7c0"), false, 1);
+
+            if (inDisk)
+            {
+                var dotRadius = Mathf.Clamp(body.Radius / mapRange * radius, 2, 14);
+                DrawCircle(mapPoint, dotRadius, dotColor);
+                if (body.Id == _targetBody?.Id)
+                {
+                    DrawCircle(mapPoint, dotRadius + 3, ReassemblyUi.CyanHighlight, false, 1.2f);
+                    DrawCircle(mapPoint, dotRadius + 6, ReassemblyUi.CyanHighlight * 0.4f, false, 1.0f);
+                }
+            }
+            else
+            {
+                var edgeDir = delta.Normalized();
+                var edgePoint = mapCenter + edgeDir * (radius - 5.0f);
+                var tip = edgePoint + edgeDir * 4.0f;
+                var side = edgeDir.Orthogonal() * 3.0f;
+                DrawPolyline(new[] { edgePoint - edgeDir * 4.0f + side, tip, edgePoint - edgeDir * 4.0f - side }, dotColor * 0.85f, 1.2f, true);
+            }
         }
 
-        // 玩家位置（小地图中心）。
-        DrawCircle(mapCenter, 3.0f, new Color("#f4f1de"));
+        DrawCircle(mapCenter, 2.5f, ReassemblyUi.TextWhite);
+        DrawCircle(mapCenter, 5.0f, ReassemblyUi.CyanHighlight * 0.6f, false, 1.0f);
 
-        DrawString(_font, mapPos + new Vector2(4, -16), "星图 · 圆环为引力范围", HorizontalAlignment.Left, -1, 12, new Color("#7f93a8"));
+        DrawString(_font, mapPos + new Vector2(10, -10), "TACTICAL RADAR // 50KM", HorizontalAlignment.Left, -1, 10, ReassemblyUi.CyanHighlight);
     }
 
     private static Font CreateUiFont()

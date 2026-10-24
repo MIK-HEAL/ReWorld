@@ -30,6 +30,7 @@ public enum BlockFeatures
     Healer = 1 << 10,        // 修理
     Vegetable = 1 << 11,     // 植物
     Transient = 1 << 12,     // 临时
+    Hyperdrive = 1 << 14,    // ReWorld 跨星系迁跃能力（项目自定义）
 }
 
 public static class ShipShapeLibrary
@@ -210,6 +211,9 @@ public static class ShipShapeLibrary
             // 深空传感器：六边形。
             ["sensor"] = MakeRegular("sensor", 262, "深空传感器", "系统", 0x72C7C2,
                 BlockFeatures.None, 6, mass: 3.0f, hull: 18.0f),
+            // Project-specific travel equipment; this is not a decoded Reassembly block.
+            ["hyperdrive"] = MakeRegular("hyperdrive", 30001, "迁跃引擎", "系统", 0x77D6DC,
+                BlockFeatures.Hyperdrive, 4, mass: 8.0f, hull: 35.0f),
             // 散热翼：六边形。
             ["radiator"] = MakeRegular("radiator", 416, "散热翼", "散热", 0x6EC6C7,
                 BlockFeatures.None, 6, mass: 3.0f, hull: 18.0f),
@@ -358,6 +362,6 @@ public static class ShipShapeLibrary
         "core", "hull", "armor", "thruster", "thruster_medium", "thruster_large", "gyro",
         "laser", "cannon", "beam", "railgun", "missile",
         "shield", "point_defense", "reactor", "generator", "capacitor",
-        "sensor", "radiator", "cargo", "tractor",
+        "sensor", "hyperdrive", "radiator", "cargo", "tractor",
     };
 }

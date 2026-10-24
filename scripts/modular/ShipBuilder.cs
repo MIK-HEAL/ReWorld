@@ -24,16 +24,16 @@ public partial class ShipBuilder : Node2D
     // Reassembly-inspired visual language: cold steel, restrained cyan telemetry,
     // and amber only for selection / warnings. The playfield stays nearly black so
     // the ship silhouette owns the screen.
-    private static readonly Color SpaceBlack = new("#03070b");
-    private static readonly Color SpaceBlue = new("#07131d");
-    private static readonly Color GridMinor = new("#10212d", 0.58f);
-    private static readonly Color GridMajor = new("#1b3442", 0.7f);
-    private static readonly Color PanelFill = new("#09131c", 0.96f);
-    private static readonly Color PanelEdge = new("#315260");
-    private static readonly Color Telemetry = new("#77d6dc");
-    private static readonly Color MutedText = new("#7893a1");
-    private static readonly Color SteelText = new("#c7d8dc");
-    private static readonly Color Amber = new("#eab66b");
+    private static readonly Color SpaceBlack = new("#121c26");
+    private static readonly Color SpaceBlue = new("#182736");
+    private static readonly Color GridMinor = new("#253a4d", 0.6f);
+    private static readonly Color GridMajor = new("#3d5e78", 0.75f);
+    private static readonly Color PanelFill = new("#1a2c3cd9");
+    private static readonly Color PanelEdge = new("#3d627a");
+    private static readonly Color Telemetry = new("#48d6c8");
+    private static readonly Color MutedText = new("#829cad");
+    private static readonly Color SteelText = new("#c2d5e0");
+    private static readonly Color Amber = new("#e1a71c");
 
     private readonly ModularShip _ship = new();
     private string _selectedShapeId = "hull";
@@ -506,13 +506,13 @@ public partial class ShipBuilder : Node2D
     {
         // Quiet vignette bands and sparse navigation ticks give the editor a hangar
         // instrument feel without covering the construction area with decoration.
-        DrawRect(new Rect2(0, 0, ViewWidth, 88), new Color("#061018", 0.86f));
-        DrawRect(new Rect2(0, ViewHeight - 46, ViewWidth, 46), new Color("#050b11", 0.92f));
+        DrawRect(new Rect2(0, 0, ViewWidth, 88), new Color("#162330", 0.88f));
+        DrawRect(new Rect2(0, ViewHeight - 46, ViewWidth, 46), new Color("#162330", 0.92f));
         for (var i = 0; i < 18; i++)
         {
             var x = 24 + i * 71;
-            DrawLine(new Vector2(x, 78), new Vector2(x + 18, 78), new Color("#20404d", 0.45f), 1);
-            DrawLine(new Vector2(x, ViewHeight - 46), new Vector2(x + 10, ViewHeight - 46), new Color("#20404d", 0.38f), 1);
+            DrawLine(new Vector2(x, 78), new Vector2(x + 18, 78), new Color("#3c6077", 0.65f), 1);
+            DrawLine(new Vector2(x, ViewHeight - 46), new Vector2(x + 10, ViewHeight - 46), new Color("#3c6077", 0.55f), 1);
         }
     }
 
@@ -658,11 +658,12 @@ public partial class ShipBuilder : Node2D
         if (_draggingBlock is not null)
             return;
 
-        // 高亮吸附目标端口（对齐 Reassembly：端口吸附时端口发光）。
         if (_snapTargetPortWorld.HasValue)
         {
-            DrawCircle(_snapTargetPortWorld.Value, 6.0f, new Color("#65c18c", 0.5f));
-            DrawCircle(_snapTargetPortWorld.Value, 10.0f, new Color("#65c18c", 0.25f), false, 1.5f);
+            var p = _snapTargetPortWorld.Value;
+            DrawCircle(p, 4.0f, ReassemblyUi.PhosphorGreen);
+            DrawArc(p, 8.0f, 0, Mathf.Tau, 24, ReassemblyUi.PhosphorGreen * 0.85f, 1.5f);
+            DrawArc(p, 14.0f, 0, Mathf.Tau, 32, ReassemblyUi.PhosphorGreen * 0.4f, 1.0f);
         }
 
         if (_draggingBlock is not null || _snapPreview is not { } snap || !ShipShapeLibrary.Shapes.TryGetValue(_selectedShapeId, out var spec))
@@ -717,17 +718,18 @@ public partial class ShipBuilder : Node2D
 
     private void DrawPalette()
     {
-        DrawTechPanel(new Rect2(PaletteX, 92, PaletteWidth, ViewHeight - 108), true);
-        DrawString(_font, new Vector2(PaletteX + 14, 118), "模块目录", HorizontalAlignment.Left, -1, 16, SteelText);
-        DrawString(_font, new Vector2(PaletteX + PaletteWidth - 104, 118), "FAB / 03", HorizontalAlignment.Left, -1, 10, Telemetry);
-        DrawLine(new Vector2(PaletteX + 12, 128), new Vector2(PaletteX + PaletteWidth - 12, 128), PanelEdge, 1.0f);
-        DrawString(_font, new Vector2(PaletteX + 14, 148), "选择组件 · 接入端口以扩展舰体", HorizontalAlignment.Left, -1, 11, MutedText);
+        var panelRect = new Rect2(PaletteX, 92, PaletteWidth, ViewHeight - 108);
+        ReassemblyUi.DrawChamferFrame(this, panelRect, ReassemblyUi.VoidDark, ReassemblyUi.CyanMuted * 0.7f, 10.0f, true, 1.2f);
+        DrawString(_font, new Vector2(PaletteX + 16, 120), "COMPONENTS", HorizontalAlignment.Left, -1, 15, ReassemblyUi.TextWhite);
+        DrawString(_font, new Vector2(PaletteX + PaletteWidth - 96, 120), "REASSEMBLY // 03", HorizontalAlignment.Left, -1, 10, ReassemblyUi.CyanHighlight);
+        DrawLine(new Vector2(PaletteX + 14, 130), new Vector2(PaletteX + PaletteWidth - 14, 130), ReassemblyUi.CyanGrid, 1.0f);
+        DrawString(_font, new Vector2(PaletteX + 16, 146), "SELECT BLOCK // CONNECT VIA PORTS", HorizontalAlignment.Left, -1, 10, ReassemblyUi.TextMuted);
 
         _paletteButtons.Clear();
-        var y = 150.0f;
+        var y = 158.0f;
         foreach (var group in ShipShapeLibrary.BuildOrder.GroupBy(id => ShipShapeLibrary.Get(id).Category))
         {
-            DrawString(_font, new Vector2(PaletteX + 14, y + 14), group.Key.ToUpperInvariant(), HorizontalAlignment.Left, -1, 10, Telemetry);
+            DrawString(_font, new Vector2(PaletteX + 16, y + 12), group.Key.ToUpperInvariant(), HorizontalAlignment.Left, -1, 10, ReassemblyUi.CyanHighlight * 0.85f);
             y += 14.0f;
 
             var col = 0;
@@ -736,58 +738,65 @@ public partial class ShipBuilder : Node2D
                 var spec = ShipShapeLibrary.Get(shapeId);
                 var x = PaletteX + 12 + col * 140;
                 var selected = shapeId == _selectedShapeId;
-                var rect = new Rect2(new Vector2(x, y), new Vector2(PaletteItemWidth, 23));
+                var rect = new Rect2(new Vector2(x, y), new Vector2(PaletteItemWidth, 24));
                 _paletteButtons.Add((rect, shapeId));
 
-                var bg = selected ? new Color("#17333e") : new Color("#0d1a24");
-                DrawRect(rect, bg);
-                DrawRect(rect, selected ? Telemetry : new Color("#203b47"), false, selected ? 1.5f : 1.0f);
+                var bg = selected ? new Color("#0e2532") : new Color("#07121b");
+                var border = selected ? ReassemblyUi.CyanHighlight : new Color("#16303d");
+                ReassemblyUi.DrawChamferFrame(this, rect, bg, border, 4.0f, false, selected ? 1.5f : 1.0f);
 
-                // 小形状预览（照搬 Reassembly 调色板图标）。
-                var previewCenter = new Vector2(x + 14, y + 11.5f);
+                var previewCenter = new Vector2(x + 14, y + 12.0f);
                 var preview = spec.Vertices().Select(v => previewCenter + v * (8.0f / spec.Radius)).ToArray();
-                DrawColoredPolygon(preview, spec.Color.Lerp(new Color("#15232d"), 0.3f));
-                DrawPolyline(preview.Append(preview[0]).ToArray(), selected ? Telemetry : new Color("#95abb1", 0.6f), 1.0f);
+                DrawColoredPolygon(preview, spec.Color.Lerp(new Color("#0a141d"), 0.25f));
+                DrawPolyline(preview.Append(preview[0]).ToArray(), selected ? ReassemblyUi.CyanHighlight : new Color("#7ca0b0", 0.6f), 1.0f);
 
                 DrawString(_font, new Vector2(x + 28, y + 16), spec.Label, HorizontalAlignment.Left, -1, 10,
-                    selected ? SteelText : new Color("#9fb3c2"));
+                    selected ? ReassemblyUi.TextWhite : ReassemblyUi.TextSteel);
 
                 col++;
                 if (col == 2)
                 {
                     col = 0;
-                    y += 26.0f;
+                    y += 27.0f;
                 }
             }
             if (col != 0)
-                y += 26.0f;
+                y += 27.0f;
         }
 
-        var statsY = ViewHeight - 60.0f;
-        DrawLine(new Vector2(PaletteX + 12, statsY - 8), new Vector2(PaletteX + PaletteWidth - 12, statsY - 8), PanelEdge, 1.0f);
-        DrawString(_font, new Vector2(PaletteX + 12, statsY + 8),
-            $"方块 {_ship.Blocks.Count}  质量 {_ship.TotalMass:0}  推力 {_ship.TotalThrust:0}  火力 {_ship.TotalDamage:0}",
-            HorizontalAlignment.Left, -1, 10, MutedText);
+        var statsY = ViewHeight - 64.0f;
+        DrawLine(new Vector2(PaletteX + 12, statsY - 8), new Vector2(PaletteX + PaletteWidth - 12, statsY - 8), ReassemblyUi.CyanGrid, 1.0f);
+        DrawString(_font, new Vector2(PaletteX + 14, statsY + 6),
+            $"BLOCKS {_ship.Blocks.Count}  MASS {_ship.TotalMass:0}  THRUST {_ship.TotalThrust:0}  DPS {_ship.TotalDamage:0}",
+            HorizontalAlignment.Left, -1, 10, ReassemblyUi.TextMuted);
+
         var sel = ShipShapeLibrary.Get(_selectedShapeId);
-        DrawString(_font, new Vector2(PaletteX + 12, statsY + 28),
-            $"{sel.Label}：质量 {sel.Mass:0} 耐久 {sel.Hull:0}" +
-            (sel.IsThruster ? $" 推力 {sel.Thrust:0}" : "") +
-            (sel.IsWeapon ? $" 伤害 {sel.Damage:0}" : ""),
-            HorizontalAlignment.Left, -1, 10, SteelText);
-        DrawString(_font, new Vector2(PaletteX + 12, statsY + 48), "M / Esc 退出建造 · F 聚焦舰体", HorizontalAlignment.Left, -1, 10, MutedText);
+        DrawString(_font, new Vector2(PaletteX + 14, statsY + 26),
+            $"{sel.Label.ToUpperInvariant()} // MASS {sel.Mass:0}  HULL {sel.Hull:0}" +
+            (sel.IsThruster ? $"  THRUST {sel.Thrust:0}" : "") +
+            (sel.IsWeapon ? $"  DPS {sel.Damage:0}" : ""),
+            HorizontalAlignment.Left, -1, 10, ReassemblyUi.CyanHighlight);
+        DrawString(_font, new Vector2(PaletteX + 14, statsY + 46), "[M / ESC] EXIT // [F] FOCUS SHIP", HorizontalAlignment.Left, -1, 10, ReassemblyUi.TextMuted);
     }
 
     private void DrawHud()
     {
         var sel = ShipShapeLibrary.Get(_selectedShapeId);
-        DrawTechPanel(new Rect2(18, 96, 354, 104), false);
-        DrawString(_font, new Vector2(34, 122), "舰体装配 / CONSTRUCTION", HorizontalAlignment.Left, -1, 10, Telemetry);
-        DrawString(_font, new Vector2(34, 148), sel.Label, HorizontalAlignment.Left, -1, 18, SteelText);
-        DrawString(_font, new Vector2(34, 169), ModuleBrief(sel), HorizontalAlignment.Left, 320, 11, MutedText);
-        DrawString(_font, new Vector2(34, 188), $"姿态 {Mathf.RadToDeg(_previewAngle):0}°   对称轴 {(_mirrorMode ? "ON" : "OFF")}", HorizontalAlignment.Left, -1, 10, Amber);
+        var hudRect = new Rect2(18, 96, 360, 116);
+        ReassemblyUi.DrawChamferFrame(this, hudRect, ReassemblyUi.VoidDark, ReassemblyUi.CyanMuted * 0.7f, 8.0f, true, 1.2f);
 
-        DrawString(_font, new Vector2(18, ViewHeight - 22), "LMB 放置 / 拖动    RMB / Q / E 旋转    X 对称    F 聚焦    滚轮 缩放", HorizontalAlignment.Left, -1, 11, MutedText);
-        DrawString(_font, new Vector2(ViewWidth - 184, ViewHeight - 22), "REWORLD // SHIPYARD", HorizontalAlignment.Left, -1, 10, Telemetry);
+        DrawString(_font, new Vector2(34, 122), "SHIP CONSTRUCTION // REASSEMBLY DOCK", HorizontalAlignment.Left, -1, 10, ReassemblyUi.CyanHighlight);
+        DrawString(_font, new Vector2(34, 148), sel.Label, HorizontalAlignment.Left, -1, 18, ReassemblyUi.TextWhite);
+        DrawString(_font, new Vector2(34, 169), ModuleBrief(sel), HorizontalAlignment.Left, 320, 11, ReassemblyUi.TextSteel);
+
+        var twrRatio = Mathf.Clamp(_ship.TotalThrust / Mathf.Max(1.0f, _ship.TotalMass * 2.5f), 0.0f, 1.0f);
+        ReassemblyUi.DrawSegmentedMeter(this, new Vector2(34, 178), new Vector2(160, 6), twrRatio, ReassemblyUi.PhosphorGreen, new Color("#10222b"), 12, 2.0f);
+        DrawString(_font, new Vector2(204, 184), $"TWR {(twrRatio * 3.0f):0.1}", HorizontalAlignment.Left, -1, 9, ReassemblyUi.TextMuted);
+
+        DrawString(_font, new Vector2(34, 202), $"ANGLE {Mathf.RadToDeg(_previewAngle):0}°   MIRROR {(_mirrorMode ? "[ACTIVE]" : "[OFF]")}", HorizontalAlignment.Left, -1, 10, _mirrorMode ? ReassemblyUi.TacticalAmber : ReassemblyUi.TextMuted);
+
+        DrawString(_font, new Vector2(18, ViewHeight - 22), "[LMB] ATTACH / DRAG    [RMB / Q / E] ROTATE    [X] MIRROR    [F] RE-CENTER    [SCROLL] ZOOM", HorizontalAlignment.Left, -1, 11, ReassemblyUi.TextSteel);
+        DrawString(_font, new Vector2(ViewWidth - 192, ViewHeight - 22), "REWORLD // SHIPYARD", HorizontalAlignment.Left, -1, 10, ReassemblyUi.CyanHighlight);
     }
 
     private static string ModuleBrief(ShipShapeLibrary.ShapeSpec spec) => spec.Id switch
@@ -800,6 +809,7 @@ public partial class ShipBuilder : Node2D
         "reactor" or "generator" or "capacitor" => "能源网络节点 · 支撑高功率系统",
         "shield" => "偏转护盾 · 覆盖周边的能量防区",
         "sensor" => "深空传感器 · 扩大航行态势感知",
+        "hyperdrive" => "迁跃引擎 · 接入核心后按 J 选择相邻星系",
         "radiator" => "散热翼 · 将热量导出舰体",
         "cargo" or "tractor" => "物流模块 · 运输与回收作业",
         _ when spec.IsWeapon => "武器挂载点 · 沿朝向投射火力",
