@@ -16,7 +16,8 @@ internal static class NativeShapeGeometry
     private sealed record ShapeRecord(JsonElement Vertices, JsonElement Ports, Dictionary<string, JsonElement>? Variants);
     private static readonly Dictionary<string, ShapeRecord> Records = Load();
 
-    internal readonly record struct Geometry(Vector2[] Vertices, List<ShipShapeLibrary.Port> Ports, bool Verified);
+    internal readonly record struct Geometry(Vector2[] Vertices, List<ShipShapeLibrary.Port> Ports,
+        Vector2 ExhaustPosition, float ExhaustHalfWidth, bool Verified);
 
     internal static bool TryGet(string shape, int scale, out Geometry geometry)
     {
@@ -40,6 +41,8 @@ internal static class NativeShapeGeometry
             signedArea += vertices[i].Cross(vertices[(i + 1) % vertices.Length]);
 
         var ports = new List<ShipShapeLibrary.Port>();
+        var exhaustPosition = Vector2.Zero;
+        var exhaustHalfWidth = 0.0f;
         if (record.Ports.ValueKind == JsonValueKind.Array)
         {
             foreach (var port in record.Ports.EnumerateArray())
@@ -54,11 +57,17 @@ internal static class NativeShapeGeometry
                 var normal = signedArea >= 0 ? new Vector2(tangent.Y, -tangent.X) : new Vector2(-tangent.Y, tangent.X);
                 var type = ParseType(port.TryGetProperty("type", out var typeValue) ? typeValue.GetString() : null);
                 var canAttach = !port.TryGetProperty("canAttach", out var attachValue) || attachValue.GetBoolean();
-                ports.Add(new ShipShapeLibrary.Port((a + b) * 0.5f, normal.Normalized(), type, canAttach));
+                var midpoint = (a + b) * 0.5f;
+                ports.Add(new ShipShapeLibrary.Port(midpoint, normal.Normalized(), type, canAttach));
+                if (type == ShipShapeLibrary.PortType.ThrusterOut)
+                {
+                    exhaustPosition = midpoint;
+                    exhaustHalfWidth = tangent.Length() * 0.5f;
+                }
             }
         }
         if (ports.Count == 0) return false;
-        geometry = new Geometry(vertices, ports, true);
+        geometry = new Geometry(vertices, ports, exhaustPosition, exhaustHalfWidth, true);
         return true;
     }
 

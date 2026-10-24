@@ -21,8 +21,8 @@ public static class UniverseGenerator
     public const float SystemRadius = 34000.0f;
     public const float MinimumInterstellarGap = SystemCellSize - 2 * SystemCenterJitter - 2 * SystemRadius;
     private static readonly Vector2 HomeSystemCenter = new(-7500, 4500);
-    /// <summary>当前阶段不生成敌人派系/敌对舰队。</summary>
-    public static bool GenerateEnemyFactions { get; } = false;
+    /// <summary>Enemy faction traffic participates in normal system generation.</summary>
+    public static bool GenerateEnemyFactions { get; } = true;
 
     /// <summary>世界坐标 → 扇区坐标（向下取整）。</summary>
     public static Vector2I WorldToSector(Vector2 world)
@@ -67,6 +67,8 @@ public static class UniverseGenerator
         /// <summary>星球可降落的资源/环境特征（决定工厂能采什么）。</summary>
         public string Biome { get; init; } = "iron";
         public bool HasSurface => Kind is CelestialKind.Planet or CelestialKind.Star;
+        /// <summary>只有恒星表面会造成碰撞伤害；行星只反弹不伤舰体。</summary>
+        public bool CausesSurfaceDamage => Kind == CelestialKind.Star;
         public float ApproachRadius => Radius + Mathf.Max(240, Radius * 0.3f);
         public float SurfaceDistance(Vector2 position) => Mathf.Max(0, Position.DistanceTo(position) - Radius);
 

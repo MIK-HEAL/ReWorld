@@ -159,11 +159,12 @@ public static partial class ShipShapeLibrary
         if (!NativeShapeGeometry.TryGet(normalized, scale, out var native))
             throw new InvalidOperationException($"Missing native geometry for shape {normalized} scale {scale} in data/reassembly/native_shape_geometry.json");
         return MakePolygon(id, numId, name, normalized, color, features, scale,
-            native.Vertices, native.Ports, thrust, native.Verified);
+            native.Vertices, native.Ports, thrust, native.ExhaustPosition, native.ExhaustHalfWidth, native.Verified);
     }
 
     private static ShapeSpec MakePolygon(string id, int numId, string name, string nativeShape, uint color,
-        BlockFeatures features, int scale, Vector2[] vertices, List<Port> ports, float thrust, bool verified)
+        BlockFeatures features, int scale, Vector2[] vertices, List<Port> ports, float thrust,
+        Vector2 exhaustPosition, float exhaustHalfWidth, bool verified)
     {
         var centroid = vertices.Aggregate(Vector2.Zero, (sum, vertex) => sum + vertex) / vertices.Length;
         vertices = vertices.Select(vertex => vertex - centroid).ToArray();
@@ -175,6 +176,7 @@ public static partial class ShipShapeLibrary
             Features = features, NativeShapeName = nativeShape, Scale = scale, Sides = vertices.Length,
             VerticesField = vertices, Ports = translatedPorts, Radius = vertices.Max(v => v.Length()),
             Mass = 5 * scale, Hull = 20 * scale, Thrust = thrust,
+            ExhaustPosition = exhaustPosition - centroid, ExhaustHalfWidth = exhaustHalfWidth,
             WeaponDirection = Vector2.Right, ThrustDirection = Vector2.Right, HasVerifiedGeometry = verified,
         };
     }

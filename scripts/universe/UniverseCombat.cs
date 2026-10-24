@@ -5,12 +5,14 @@ using System.Linq;
 
 public partial class UniverseView
 {
+    public const int RespawnCost = 100;
     public PlayerProgress Progress { get; set; } = new();
     public CombatWorld Combat { get; } = new();
     public CombatVessel? PlayerCombat { get; private set; }
     public bool TableOpen => _tableOpen;
     public bool DiplomacyOpen => _diplomacyOpen;
     private bool _tableOpen, _diplomacyOpen, _deathAnnounced;
+    private float _repairDebt;
     private float _beforeTableZoom;
     private readonly List<CombatVessel> _combatActors = new();
     private readonly Dictionary<Vector2I, List<CombatVessel>> _mineralFields = new();
@@ -22,7 +24,9 @@ public partial class UniverseView
     private void BindCombatShip()
     {
         if (_ship is null) return;
-        PlayerCombat = new CombatVessel { Name = "独立舰长", Ship = _ship, FactionId = FactionRelations.Player };
+        PlayerCombat = new CombatVessel { Name = "独立舰长", Ship = _ship, FactionId = FactionRelations.Player,
+            Position = _playerPosition, PreviousPosition = _previousPlayerPosition, Velocity = _playerVelocity,
+            Heading = _playerHeading };
     }
     private void InitializeCampaign()
     {
@@ -31,7 +35,7 @@ public partial class UniverseView
         if (Progress.Established)
         {
             _playerBase = new CombatVessel { Name = "自治前哨", Ship = UniverseTraffic.BuildStation(),
-                FactionId = FactionRelations.Player, Position = new(Progress.BaseX, Progress.BaseY), PreviousPosition = new(Progress.BaseX, Progress.BaseY) };
+                FactionId = FactionRelations.Player, Position = new(Progress.BaseX, Progress.BaseY), PreviousPosition = new(Progress.BaseX, Progress.BaseY), CollisionStatic = true };
             foreach (var lua in Progress.FleetDesigns)
             {
                 var ship = ShipDesign.ParseLua(lua).ToShip();
@@ -73,6 +77,15 @@ public partial class UniverseView
         PlayerCombat.Heading = _playerHeading; PlayerCombat.Velocity = _playerVelocity;
         var active = !_warp.LocksFlight && !IsDocked;
         SyncCombatActors(active);
+        for (var i = 0; i < _combatActors.Count; i++)
+        {
+            var actor = _combatActors[i];
+            if (actor.SurfaceImpact > 0)
+            {
+                Combat.SurfaceImpact(actor, actor.SurfaceImpact, actor.SurfaceNormal);
+                actor.SurfaceImpact = 0; actor.SurfaceNormal = Vector2.Zero;
+            }
+        }
         var manual = active && !_tableOpen && !_diplomacyOpen && !_chartOpen &&
             _pointerScreen is { } pointer && !MiniMapRect.HasPoint(pointer) && Input.IsMouseButtonPressed(MouseButton.Left);
         Combat.Step(dt, _combatActors, Progress.Diplomacy, PlayerCombat, manual,
@@ -80,8 +93,19 @@ public partial class UniverseView
         if (active)
         {
             _playerPosition = PlayerCombat.Position;
+            _playerVelocity = PlayerCombat.Velocity;
             var collected = Combat.Collect(_playerPosition, PlayerCombat.HasTractor ? 450 : 100);
             if (collected > 0) { Progress.Collect(collected); Notify($"回收 {collected} R · M 造舰 / U 查看升级"); }
+        }
+        // Live ships slowly self-repair and regrow destroyed blocks when resources allow.
+        if (_ship is not null && _ship.HasLiveCore && active)
+        {
+            var repairCost = _ship.TickRepair(dt, Progress.Resources);
+            if (repairCost > 0f)
+            {
+                _repairDebt += repairCost;
+                if (_repairDebt >= 1f) { var r = (int)_repairDebt; Progress.Spend(r); _repairDebt -= r; }
+            }
         }
         if (!_ship.HasLiveCore && !_deathAnnounced)
         { _deathAnnounced = true; Notify("指挥核心已毁 · Enter 返回空间站并启用应急舰"); }
@@ -96,7 +120,7 @@ public partial class UniverseView
     }
     public bool AidFaction(int faction)
     {
-        if (Progress.Diplomacy.AtWar(FactionRelations.Player, faction) || !Progress.Spend(50)) return false;
+        if (Progress.Diplomacy.Hostile(FactionRelations.Player, faction) || !Progress.Spend(50)) return false;
         ChangeRelation(faction, DiplomaticState.Friendly);
         return true;
     }
@@ -104,11 +128,11 @@ public partial class UniverseView
     {
         if (Progress.Established || _ship is null || !_ship.HasLiveCore || _warp.LocksFlight || IsDocked ||
             _visibleBodies.Any(b => b.HasSurface && b.SurfaceDistance(_playerPosition) < 500) ||
-            _traffic.Vessels.Any(v => v.Alive && Progress.Diplomacy.AtWar(v.FactionId, FactionRelations.Player) && v.Position.DistanceTo(_playerPosition) < 1500)) return false;
+            _traffic.Vessels.Any(v => v.Alive && Progress.Diplomacy.Hostile(v.FactionId, FactionRelations.Player) && v.Position.DistanceTo(_playerPosition) < 1500)) return false;
         if (!Progress.Spend(1000)) return false;
         var position = _playerPosition;
         _playerBase = new CombatVessel { Name = "自治前哨", Ship = UniverseTraffic.BuildStation(),
-            FactionId = FactionRelations.Player, Position = position, PreviousPosition = position };
+            FactionId = FactionRelations.Player, Position = position, PreviousPosition = position, CollisionStatic = true };
         // The outpost replaces the captain's current anchorage, so no random offset can intersect a planet.
         _playerPosition += Vector2.Right * 260;
         Progress.Established = true; Progress.BaseX = position.X; Progress.BaseY = position.Y;
@@ -129,14 +153,51 @@ public partial class UniverseView
         Progress.Commit(); Notify($"舰船制造完成 · 消耗 {price} R · Tab 选择并下达指令");
         return true;
     }
-    private void EmergencyRespawn()
+    public bool TryRespawn()
     {
-        if (_ship is null || _ship.HasLiveCore) return;
+        if (_ship is null || _ship.HasLiveCore) return false;
+        if (!TryGetRespawnLocation(out var position, out var siteRadius, out var stationName))
+        {
+            Notify("没有可用的友好空间站或自有前哨");
+            return false;
+        }
+        if (!Progress.Spend(RespawnCost))
+        {
+            Notify($"复活需要 {RespawnCost} R");
+            return false;
+        }
         _ship.SeedReferenceShip();
-        _playerPosition = DockingPosition(NearestStation()!, _ship.BoundingRadius());
+        var radius = _ship.BoundingRadius();
+        _playerPosition = position + Vector2.Right * (siteRadius + radius + 40);
         _playerVelocity = Vector2.Zero; _playerAngularVelocity = 0;
         BindCombatShip(); RefreshFlightProfile(); ResetFlightPresentation(); _deathAnnounced = false;
-        Notify("已启用基础应急舰 · 科技和资源进度保留");
+        Notify($"已在{stationName}复活 · 消耗 {RespawnCost} R · 科技进度保留");
+        return true;
+    }
+
+    private bool TryGetRespawnLocation(out Vector2 position, out float siteRadius, out string name)
+    {
+        position = default;
+        siteRadius = 0;
+        name = "";
+        var candidates = new List<(float Distance, Vector2 Position, float Radius, string Name)>();
+        if (_playerBase is { Alive: true } baseStation)
+            candidates.Add((_playerPosition.DistanceSquaredTo(baseStation.Position), baseStation.Position,
+                baseStation.Ship.BoundingRadius(), "自治前哨"));
+        var system = UniverseGenerator.GenerateSystem(UniverseGenerator.WorldToSystemCell(_playerPosition));
+        foreach (var station in system.Bodies.Where(body => body.Kind == UniverseGenerator.CelestialKind.Station))
+        {
+            if (!_traffic.StationActors.TryGetValue(station.Id, out var actor) || !actor.Alive ||
+                Progress.Diplomacy.Hostile(FactionRelations.Player, actor.FactionId)) continue;
+            candidates.Add((_playerPosition.DistanceSquaredTo(actor.Position), actor.Position,
+                actor.Ship.BoundingRadius(), station.Name));
+        }
+        var selected = candidates.OrderBy(candidate => candidate.Distance).FirstOrDefault();
+        if (selected.Name is null) return false;
+        position = selected.Position;
+        siteRadius = selected.Radius;
+        name = selected.Name;
+        return true;
     }
 
     private bool HandleCampaignInput(InputEvent input)
@@ -153,7 +214,7 @@ public partial class UniverseView
             if (key.Keycode == Key.V && !_warp.LocksFlight && !_chartOpen)
             { CloseTable(); _diplomacyOpen = !_diplomacyOpen; return true; }
             if (key.Keycode == Key.Escape && (_tableOpen || _diplomacyOpen)) { CloseCampaignOverlays(); return true; }
-            if (key.Keycode == Key.Enter && _deathAnnounced) { EmergencyRespawn(); return true; }
+            if (key.Keycode == Key.Enter && _deathAnnounced) { TryRespawn(); return true; }
             if (_tableOpen && key.Keycode == Key.B) { if (!EstablishBase()) Notify("建前哨需 1000 R，离开地表与交战区域"); return true; }
             if (_tableOpen && key.Keycode == Key.N) { if (!ManufactureFleetShip()) Notify("制造需自己的前哨、足够资源和已解锁蓝图，舰队上限 8 艘"); return true; }
             if (_tableOpen && key.Keycode == Key.G)
@@ -166,7 +227,12 @@ public partial class UniverseView
                     if (rect.HasPoint(click.Position))
                     {
                         if (action == "aid") { if (!AidFaction(faction)) Notify("援助需 50 R，且双方不能处于交战状态"); }
-                        else ChangeRelation(faction, action == "war" ? DiplomaticState.War : DiplomaticState.Neutral);
+                        else ChangeRelation(faction, action switch
+                        {
+                            "war" => DiplomaticState.War,
+                            "wanted" => DiplomaticState.Wanted,
+                            _ => DiplomaticState.Neutral
+                        });
                         break;
                     }
             return input is not InputEventKey { Keycode: Key.M or Key.F11 };
@@ -188,7 +254,7 @@ public partial class UniverseView
 
     private Color FactionColor(int faction) => faction == FactionRelations.Player ? new Color("#66d9b0")
         : Progress.Diplomacy.Get(FactionRelations.Player, faction) switch
-        { DiplomaticState.War => new Color("#f46a6a"), DiplomaticState.Friendly => new Color("#6acbe0"), _ => new Color("#d6bd7d") };
+        { DiplomaticState.War or DiplomaticState.Wanted => new Color("#f46a6a"), DiplomaticState.Friendly => new Color("#6acbe0"), _ => new Color("#d6bd7d") };
 
     private void DrawCombatWorld(Rect2 view)
     {
@@ -229,7 +295,7 @@ public partial class UniverseView
         {
             var rect = new Rect2(20, 285, 360, 130);
             ReassemblyUi.DrawChamferFrame(this, rect, ReassemblyUi.VoidDark, ReassemblyUi.CyanMuted, 6, true);
-            DrawString(_font, new Vector2(36, 310), "舰队指挥 / TABLE", fontSize: 16, modulate: ReassemblyUi.CyanHighlight);
+            DrawString(_font, new Vector2(36, 310), "舰队指挥 / TAB", fontSize: 16, modulate: ReassemblyUi.CyanHighlight);
             DrawString(_font, new Vector2(36, 335), "左键选择自有舰 · 右键下达移动指令", fontSize: 13, modulate: ReassemblyUi.TextSteel);
             DrawString(_font, new Vector2(36, 359), "G 集结跟随 · B 建立前哨（1000 R）", fontSize: 13, modulate: ReassemblyUi.TextSteel);
             DrawString(_font, new Vector2(36, 384), "N 前哨造舰 · V 派系外交 · Tab 返回驾驶", fontSize: 13, modulate: ReassemblyUi.TextSteel);
@@ -246,8 +312,13 @@ public partial class UniverseView
             var y = 270 + index++ * 68;
             var state = Progress.Diplomacy.Get(1, faction);
             DrawString(_font, new Vector2(300, y + 24), $"{Progress.Diplomacy.Name(faction)} · {FactionRelations.Label(state)}", fontSize: 15, modulate: FactionColor(faction));
-            var action = state == DiplomaticState.War ? "peace" : "war";
-            foreach (var item in new[] { (X: 695f, Action: action, Text: action == "war" ? "宣战" : "停战"), (X: 825f, Action: "aid", Text: "援助 50 R") })
+            var action = state is DiplomaticState.War or DiplomaticState.Wanted ? "peace" : "war";
+            foreach (var item in new[]
+            {
+                (X: 650f, Action: action, Text: action == "war" ? "宣战" : "停战"),
+                (X: 775f, Action: "wanted", Text: "通缉"),
+                (X: 900f, Action: "aid", Text: "援助 50 R")
+            })
             {
                 var rect = new Rect2(item.X, y, 115, 34);
                 _diplomaticButtons.Add((rect, faction, item.Action));

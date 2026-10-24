@@ -696,7 +696,7 @@ public partial class ShipBuilder : Node2D
         var panelRect = new Rect2(PaletteX, 92, PaletteWidth, ViewHeight - 108);
         ReassemblyUi.DrawChamferFrame(this, panelRect, ReassemblyUi.VoidDark, ReassemblyUi.CyanMuted * 0.7f, 10.0f, true, 1.2f);
         DrawString(_font, new Vector2(PaletteX + 16, 120), $"方块目录 {ShipShapeLibrary.BuildOrder.Length}", HorizontalAlignment.Left, -1, 15, ReassemblyUi.TextWhite);
-        DrawString(_font, new Vector2(PaletteX + 210, 120), $"R {Progress.Resources}", HorizontalAlignment.Left, -1, 13, Amber);
+        DrawString(_font, new Vector2(PaletteX + PaletteWidth - 116, 120), $"R {Progress.Resources}", HorizontalAlignment.Right, 100, 13, Amber);
         DrawLine(new Vector2(PaletteX + 14, 130), new Vector2(PaletteX + PaletteWidth - 14, 130), ReassemblyUi.CyanGrid, 1.0f);
         _categoryButtons.Clear();
         var categories = new[] { "全部" }.Concat(ShipShapeLibrary.BuildOrder.Select(ShipShapeLibrary.Get)
@@ -705,7 +705,7 @@ public partial class ShipBuilder : Node2D
         {
             var rect = new Rect2(PaletteX + 12 + i % 5 * 56, 138 + i / 5 * 18, 54, 17);
             _categoryButtons.Add((rect, categories[i]));
-            DrawString(_font, rect.Position + new Vector2(2, 12), categories[i], fontSize: 10,
+            DrawString(_font, rect.Position + new Vector2(2, 12), ReassemblyUi.FitText(_font, categories[i], 10, 50), fontSize: 10,
                 modulate: categories[i] == _catalogCategory ? Amber : MutedText);
         }
 
@@ -732,9 +732,8 @@ public partial class ShipBuilder : Node2D
                 ModularShipVisual.DrawIcon(this, spec, previewCenter, 8.0f, encrypted: !Progress.CanBuild(shapeId));
 
                 var unlocked = Progress.CanBuild(shapeId);
-                var label = spec.Label;
-                if (label.Length > 13) label = label[..12] + "…";
-                DrawString(_font, new Vector2(x + 28, y + 16), label, HorizontalAlignment.Left, -1, 10,
+                var label = ReassemblyUi.FitText(_font, spec.Label, 10, PaletteItemWidth - 34.0f);
+                DrawString(_font, new Vector2(x + 28, y + 16), label, HorizontalAlignment.Left, PaletteItemWidth - 34.0f, 10,
                     unlocked ? ReassemblyUi.TextSteel : ReassemblyUi.TextMuted);
         }
         DrawString(_font, new Vector2(PaletteX + 16, 594), "< 上页", fontSize: 12, modulate: Telemetry);
@@ -747,16 +746,20 @@ public partial class ShipBuilder : Node2D
         var statsY = ViewHeight - 64.0f;
         DrawLine(new Vector2(PaletteX + 12, statsY - 8), new Vector2(PaletteX + PaletteWidth - 12, statsY - 8), ReassemblyUi.CyanGrid, 1.0f);
         DrawString(_font, new Vector2(PaletteX + 14, statsY + 6),
-            $"BLOCKS {_ship.Blocks.Count}  MASS {_ship.TotalMass:0}  THRUST {_ship.TotalThrust:0}  DPS {_ship.TotalDamage:0}",
+            ReassemblyUi.FitText(_font,
+                $"方块 {_ship.Blocks.Count}  质量 {_ship.TotalMass:0}  推力 {_ship.TotalThrust:0}  火力 {_ship.TotalDamage:0}",
+                10, PaletteWidth - 28.0f),
             HorizontalAlignment.Left, -1, 10, ReassemblyUi.TextMuted);
 
         var sel = ShipShapeLibrary.Get(_selectedShapeId);
         DrawString(_font, new Vector2(PaletteX + 14, statsY + 26),
-            $"{sel.Label.ToUpperInvariant()} // MASS {sel.Mass:0}  HULL {sel.Hull:0}" +
-            (sel.IsThruster ? $"  THRUST {sel.Thrust:0}" : "") +
-            (sel.IsWeapon ? $"  DPS {sel.Damage:0}" : ""),
+            ReassemblyUi.FitText(_font,
+                $"{sel.Label} // 质量 {sel.Mass:0}  船体 {sel.Hull:0}" +
+                (sel.IsThruster ? $"  推力 {sel.Thrust:0}" : "") +
+                (sel.IsWeapon ? $"  火力 {sel.Damage:0}" : ""),
+                10, PaletteWidth - 28.0f),
             HorizontalAlignment.Left, -1, 10, ReassemblyUi.CyanHighlight);
-        DrawString(_font, new Vector2(PaletteX + 14, statsY + 46), "[M / ESC] EXIT // [F] FOCUS SHIP", HorizontalAlignment.Left, -1, 10, ReassemblyUi.TextMuted);
+        DrawString(_font, new Vector2(PaletteX + 14, statsY + 46), "[M / ESC] 退出 // [F] 聚焦舰体", HorizontalAlignment.Left, -1, 10, ReassemblyUi.TextMuted);
     }
 
     private void DrawHud()
@@ -765,18 +768,18 @@ public partial class ShipBuilder : Node2D
         var hudRect = new Rect2(18, 96, 360, 116);
         ReassemblyUi.DrawChamferFrame(this, hudRect, ReassemblyUi.VoidDark, ReassemblyUi.CyanMuted * 0.7f, 8.0f, true, 1.2f);
 
-        DrawString(_font, new Vector2(34, 122), "SHIP CONSTRUCTION // REASSEMBLY DOCK", HorizontalAlignment.Left, -1, 10, ReassemblyUi.CyanHighlight);
-        DrawString(_font, new Vector2(34, 148), sel.Label.Length > 25 ? sel.Label[..24] + "…" : sel.Label, HorizontalAlignment.Left, -1, 16, ReassemblyUi.TextWhite);
+        DrawString(_font, new Vector2(34, 122), "舰船建造 // REASSEMBLY 船坞", HorizontalAlignment.Left, -1, 10, ReassemblyUi.CyanHighlight);
+        DrawString(_font, new Vector2(34, 148), ReassemblyUi.FitText(_font, sel.Label, 16, 330), HorizontalAlignment.Left, -1, 16, ReassemblyUi.TextWhite);
         DrawString(_font, new Vector2(34, 169), ModuleBrief(sel), HorizontalAlignment.Left, 320, 11, ReassemblyUi.TextSteel);
 
         var twrRatio = Mathf.Clamp(_ship.TotalThrust / Mathf.Max(1.0f, _ship.TotalMass * 2.5f), 0.0f, 1.0f);
         ReassemblyUi.DrawSegmentedMeter(this, new Vector2(34, 178), new Vector2(160, 6), twrRatio, ReassemblyUi.PhosphorGreen, new Color("#10222b"), 12, 2.0f);
-        DrawString(_font, new Vector2(204, 184), $"TWR {(twrRatio * 3.0f):0.1}", HorizontalAlignment.Left, -1, 9, ReassemblyUi.TextMuted);
+        DrawString(_font, new Vector2(204, 184), $"推重比 {(twrRatio * 3.0f):0.1}", HorizontalAlignment.Left, -1, 9, ReassemblyUi.TextMuted);
 
-        DrawString(_font, new Vector2(34, 202), $"ANGLE {Mathf.RadToDeg(_previewAngle):0}°   MIRROR {(_mirrorMode ? "[ACTIVE]" : "[OFF]")}", HorizontalAlignment.Left, -1, 10, _mirrorMode ? ReassemblyUi.TacticalAmber : ReassemblyUi.TextMuted);
+        DrawString(_font, new Vector2(34, 202), $"角度 {Mathf.RadToDeg(_previewAngle):0}°   镜像 {(_mirrorMode ? "开" : "关")}", HorizontalAlignment.Left, -1, 10, _mirrorMode ? ReassemblyUi.TacticalAmber : ReassemblyUi.TextMuted);
 
-        DrawString(_font, new Vector2(18, ViewHeight - 22), "[LMB] ATTACH / DRAG    [RMB / Q / E] ROTATE    [X] MIRROR    [F] RE-CENTER    [U] UPGRADES", HorizontalAlignment.Left, -1, 11, ReassemblyUi.TextSteel);
-        DrawString(_font, new Vector2(ViewWidth - 192, ViewHeight - 22), "REWORLD // SHIPYARD", HorizontalAlignment.Left, -1, 10, ReassemblyUi.CyanHighlight);
+        DrawString(_font, new Vector2(18, ViewHeight - 22), "[左键] 放置 / 拖拽    [右键 / Q / E] 旋转    [X] 镜像    [F] 回中    [U] 升级", HorizontalAlignment.Left, -1, 11, ReassemblyUi.TextSteel);
+        DrawString(_font, new Vector2(ViewWidth - 192, ViewHeight - 22), "REWORLD // 造舰厂", HorizontalAlignment.Left, -1, 10, ReassemblyUi.CyanHighlight);
     }
 
     private static string ModuleBrief(ShipShapeLibrary.ShapeSpec spec)
@@ -791,7 +794,7 @@ public partial class ShipBuilder : Node2D
             return $"{spec.NativeShapeName} · {detail}";
         }
         if (spec.NativeShape > 0)
-            return $"原版 shape {spec.NativeShape} · {(spec.IsWeapon ? $"炮 {spec.Damage:0}伤害/{spec.Range:0}m" : "模块规格")}";
+            return $"原版方块 {spec.NativeShape} · {(spec.IsWeapon ? $"炮 {spec.Damage:0}伤害/{spec.Range:0}m" : "模块规格")}";
         return spec.Id switch
         {
             "core" => "舰船指挥核心 · 提供连接基准与生命支持",

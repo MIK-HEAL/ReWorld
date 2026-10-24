@@ -27,7 +27,7 @@ public partial class UniverseView
     public bool IsDocked => _dockedStation is not null;
     public bool ChartOpen => _chartOpen;
     public bool TravelLocksBuilder => _warp.LocksFlight || _ship is { HasLiveCore: false } ||
-        _traffic.Vessels.Any(v => v.Alive && Progress.Diplomacy.AtWar(1, v.FactionId) && v.Position.DistanceTo(_playerPosition) < 1500);
+        _traffic.Vessels.Any(v => v.Alive && Progress.Diplomacy.Hostile(1, v.FactionId) && v.Position.DistanceTo(_playerPosition) < 1500);
     public void CloseNavigationOverlays() { _chartOpen = false; CloseCampaignOverlays(); }
     public double FrameMedianMs => _median;
     public double FrameP95Ms => _p95;
@@ -144,17 +144,6 @@ public partial class UniverseView
             _thrusterActivity.Clear();
             return true;
         }
-        // Solid station envelope; friendly vessels remain non-blocking to avoid traffic jams.
-        foreach (var body in _visibleBodies)
-        {
-            if (body.Kind != UniverseGenerator.CelestialKind.Station) continue;
-            var offset = _playerPosition - body.Position;
-            var clearance = body.Radius + _flightProfile.BoundingRadius + 12;
-            if (offset.LengthSquared() >= clearance * clearance) continue;
-            var normal = offset.IsZeroApprox() ? Vector2.Right : offset.Normalized();
-            _playerPosition = body.Position + normal * clearance;
-            if (_playerVelocity.Dot(normal) < 0) _playerVelocity -= normal * _playerVelocity.Dot(normal);
-        }
         return false;
     }
 
@@ -179,7 +168,7 @@ public partial class UniverseView
             return true;
         }
         var station = NearestStation();
-        if (station is not null && (Progress.Diplomacy.AtWar(1, FactionRelations.League) ||
+        if (station is not null && (Progress.Diplomacy.Hostile(1, FactionRelations.League) ||
             _traffic.StationActors.TryGetValue(station.Id, out var actor) && !actor.Alive))
         { Notify("交战或已摧毁的空间站无法停靠"); return false; }
         if (station is null || station.SurfaceDistance(_playerPosition) > 700)
@@ -298,12 +287,26 @@ public partial class UniverseView
     }
     private void DrawWorldOverlays()
     {
+        // 舰船名牌防重叠：记录已占用的标签矩形，发生碰撞时向上错开
+        var occupiedLabelRects = new List<Rect2>();
         foreach (var v in _traffic.Vessels)
         {
             if (!v.Alive) continue;
             var point = WorldToScreen(v.PreviousPosition.Lerp(v.Position, (float)Engine.GetPhysicsInterpolationFraction()));
             if (new Rect2(320, 90, 680, 470).HasPoint(point) && _cameraZoom > 0.18f)
-                DrawString(_font, point + new Vector2(-80, -42), $"{v.Name} · {FactionRelations.Label(Progress.Diplomacy.Get(1, v.FactionId))}", HorizontalAlignment.Center, 160, 11, FactionColor(v.FactionId));
+            {
+                var labelPos = point + new Vector2(-80, -42);
+                var labelRect = new Rect2(labelPos + new Vector2(0, -12), new Vector2(160, 15));
+                var attempts = 0;
+                while (attempts < 6 && occupiedLabelRects.Any(r => r.Intersects(labelRect)))
+                {
+                    labelPos.Y -= 17;
+                    labelRect = new Rect2(labelPos + new Vector2(0, -12), new Vector2(160, 15));
+                    attempts++;
+                }
+                occupiedLabelRects.Add(labelRect);
+                DrawString(_font, labelPos, $"{v.Name} · {FactionRelations.Label(Progress.Diplomacy.Get(1, v.FactionId))}", HorizontalAlignment.Center, 160, 11, FactionColor(v.FactionId));
+            }
             var map = MiniMapPoint(v.Position);
             if (MiniMapRect.Grow(-4).HasPoint(map)) DrawCircle(map, 2, FactionColor(v.FactionId));
         }
@@ -313,8 +316,8 @@ public partial class UniverseView
         {
             var dockRect = new Rect2(340, 470, 600, 94);
             ReassemblyUi.DrawChamferFrame(this, dockRect, ReassemblyUi.VoidDark, ReassemblyUi.CyanHighlight, 8.0f, true, 1.5f);
-            DrawString(_font, new Vector2(366, 504), "STATION SERVICES // DOCKED & REPAIRED", fontSize: 18, modulate: ReassemblyUi.CyanHighlight);
-            DrawString(_font, new Vector2(366, 536), "[M] ENTER SHIPYARD    [F] UNDOCK", fontSize: 13, modulate: ReassemblyUi.TextSteel);
+            DrawString(_font, new Vector2(366, 504), "空间站服务 // 已停靠 · 维修完成", fontSize: 18, modulate: ReassemblyUi.CyanHighlight);
+            DrawString(_font, new Vector2(366, 536), "[M] 进入造舰厂    [F] 离港", fontSize: 13, modulate: ReassemblyUi.TextSteel);
         }
         if (_showPerformance)
             DrawString(_font, new Vector2(340, 120), $"F3 帧时间 P50 {_median:0.0}ms / P95 {_p95:0.0}ms · {Engine.GetFramesPerSecond()} FPS · 静态绘制 {RetainedDrawCount}", fontSize: 13, modulate: Colors.LightGreen);
@@ -328,8 +331,8 @@ public partial class UniverseView
         var chartRect = new Rect2(180, 110, 920, 510);
         ReassemblyUi.DrawChamferFrame(this, chartRect, ReassemblyUi.VoidDark, ReassemblyUi.PanelBorder, 12.0f, true, 1.2f);
 
-        DrawString(_font, new Vector2(220, 150), "HYPERDRIVE SECTOR TOPOLOGY // 星系航图", fontSize: 20, modulate: ReassemblyUi.CyanHighlight);
-        DrawString(_font, new Vector2(220, 178), "SELECT ADJACENT NODE · ARROWS/CLICK TO SELECT · [ENTER] CHARGE · [ESC] EXIT", fontSize: 12, modulate: ReassemblyUi.TextMuted);
+        DrawString(_font, new Vector2(220, 150), "迁跃引擎星区拓扑 // 星系航图", fontSize: 20, modulate: ReassemblyUi.CyanHighlight);
+        DrawString(_font, new Vector2(220, 178), "选择相邻节点 · 方向键/点击选择 · [回车] 充能启程 · [ESC] 退出", fontSize: 12, modulate: ReassemblyUi.TextMuted);
 
         foreach (var offset in ChartOffsets)
         {
@@ -346,21 +349,21 @@ public partial class UniverseView
                 DrawArc(point, 18, 0, Mathf.Tau, 24, ReassemblyUi.CyanHighlight, 1.5f);
                 DrawArc(point, 24, 0, Mathf.Tau, 32, ReassemblyUi.CyanHighlight * 0.4f, 1.0f);
             }
-            DrawString(_font, point + new Vector2(-65, 34), UniverseGenerator.SystemName(cell).ToUpperInvariant(), HorizontalAlignment.Center, 130, 11, selected ? ReassemblyUi.TextWhite : ReassemblyUi.TextSteel);
+            DrawString(_font, point + new Vector2(-65, 34), UniverseGenerator.SystemName(cell), HorizontalAlignment.Center, 130, 11, selected ? ReassemblyUi.TextWhite : ReassemblyUi.TextSteel);
         }
 
         var destination = UniverseGenerator.GenerateSystem(_warpSelection);
         var detailRect = new Rect2(760, 240, 310, 320);
         ReassemblyUi.DrawChamferFrame(this, detailRect, ReassemblyUi.VoidDark, ReassemblyUi.PanelBorder, 8.0f, false, 1.0f);
 
-        DrawString(_font, new Vector2(780, 280), destination.Name.ToUpperInvariant(), fontSize: 20, modulate: ReassemblyUi.TextWhite);
-        DrawString(_font, new Vector2(780, 316), _warpSelection == _chartOrigin ? "CURRENT POSITION // 现驻节点" : "TARGET SECTOR // 航程可达", fontSize: 13, modulate: ReassemblyUi.CyanHighlight);
-        DrawString(_font, new Vector2(780, 350), $"{destination.Bodies.Count(b => b.Kind == UniverseGenerator.CelestialKind.Planet)} PLANETS / 2 STATIONS", fontSize: 12, modulate: ReassemblyUi.TextSteel);
-        DrawString(_font, new Vector2(780, 384), "APPROACH POINT: HIGH ORBIT SAFE ZONE", fontSize: 11, modulate: ReassemblyUi.TextMuted);
+        DrawString(_font, new Vector2(780, 280), destination.Name, fontSize: 20, modulate: ReassemblyUi.TextWhite);
+        DrawString(_font, new Vector2(780, 316), _warpSelection == _chartOrigin ? "当前位置 // 现驻节点" : "目标星区 // 航程可达", fontSize: 13, modulate: ReassemblyUi.CyanHighlight);
+        DrawString(_font, new Vector2(780, 350), $"{destination.Bodies.Count(b => b.Kind == UniverseGenerator.CelestialKind.Planet)} 颗行星 / 2 座空间站", fontSize: 12, modulate: ReassemblyUi.TextSteel);
+        DrawString(_font, new Vector2(780, 384), "进轨点：高轨道安全区", fontSize: 11, modulate: ReassemblyUi.TextMuted);
 
         var btnRect = new Rect2(780, 480, 270, 44);
         ReassemblyUi.DrawChamferFrame(this, btnRect, new Color("#1c4254"), ReassemblyUi.CyanHighlight, 6.0f, true, 1.2f);
-        DrawString(_font, new Vector2(810, 508), "[ENTER]  ENGAGE HYPERDRIVE", fontSize: 14, modulate: ReassemblyUi.TextWhite);
+        DrawString(_font, new Vector2(810, 508), "[回车]  启动迁跃引擎", fontSize: 14, modulate: ReassemblyUi.TextWhite);
 
         if (_noticeTime > 0) DrawString(_font, new Vector2(220, 595), _notice, fontSize: 12, modulate: ReassemblyUi.TacticalAmber);
     }

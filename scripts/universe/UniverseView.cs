@@ -156,7 +156,14 @@ public partial class UniverseView : Node2D
                 ref _playerAngularVelocity, acceleration, angularAcceleration, dt);
             var shipRadius = _ship is null ? 24 : _flightProfile.BoundingRadius;
             foreach (var body in _visibleBodies)
-                UniverseNavigation.ResolveSurface(body, shipRadius, ref _playerPosition, ref _playerVelocity);
+            {
+                var impact = UniverseNavigation.ResolveSurface(body, shipRadius, ref _playerPosition, ref _playerVelocity);
+                if (impact > 0 && body.CausesSurfaceDamage && PlayerCombat is { } combat)
+                {
+                    if (impact > combat.SurfaceImpact)
+                    { combat.SurfaceImpact = impact; combat.SurfaceNormal = (_playerPosition - body.Position).Normalized(); }
+                }
+            }
         }
         TickCombat(elapsed);
     }
@@ -550,12 +557,12 @@ public partial class UniverseView : Node2D
         var systemCell = UniverseGenerator.WorldToSystemCell(_playerPosition);
         var systemCenter = UniverseGenerator.SystemCenter(systemCell);
         var location = _playerPosition.DistanceTo(systemCenter) <= UniverseGenerator.SystemRadius
-            ? UniverseGenerator.SystemName(systemCell) : "INTERSTELLAR DEEP";
+            ? UniverseGenerator.SystemName(systemCell) : "星际深空";
 
         var topRect = new Rect2(16, 12, 540, 56);
         ReassemblyUi.DrawChamferFrame(this, topRect, ReassemblyUi.VoidDark, ReassemblyUi.CyanMuted * 0.7f, 6.0f, true, 1.2f);
-        DrawString(_font, new Vector2(30, 30), "TELEMETRY // STARFORGE FRONTIER", HorizontalAlignment.Left, -1, 10, ReassemblyUi.CyanHighlight);
-        DrawString(_font, new Vector2(30, 52), $"{location.ToUpperInvariant()}   SEC [{sector.X},{sector.Y}]   SPD {_playerVelocity.Length():0} M/S",
+        DrawString(_font, new Vector2(30, 30), "遥测 // 星铸边境", HorizontalAlignment.Left, -1, 10, ReassemblyUi.CyanHighlight);
+        DrawString(_font, new Vector2(30, 52), $"{location}   星区 [{sector.X},{sector.Y}]   速度 {_playerVelocity.Length():0} M/S",
             HorizontalAlignment.Left, -1, 13, ReassemblyUi.TextWhite);
 
         var speedRatio = Mathf.Clamp(_playerVelocity.Length() / 600.0f, 0.0f, 1.0f);
@@ -566,7 +573,7 @@ public partial class UniverseView : Node2D
             var danger = _currentGravity > 400.0f;
             var gravRect = new Rect2(16, 74, 260, 26);
             ReassemblyUi.DrawChamferFrame(this, gravRect, ReassemblyUi.VoidDark, danger ? ReassemblyUi.DangerRed : ReassemblyUi.TacticalAmber, 4.0f, false, 1.0f);
-            var gravLabel = danger ? "HIGH GRAVITY WELL" : "GRAVITY FIELD DETECTED";
+            var gravLabel = danger ? "强引力井" : "探测到引力场";
             DrawString(_font, new Vector2(26, 91), $"{gravLabel} // {_currentGravity:0}",
                 HorizontalAlignment.Left, -1, 11, danger ? ReassemblyUi.DangerRed : ReassemblyUi.TacticalAmber);
         }
@@ -575,12 +582,12 @@ public partial class UniverseView : Node2D
         {
             var targetRect = new Rect2(16, 106, 310, 86);
             ReassemblyUi.DrawChamferFrame(this, targetRect, ReassemblyUi.VoidDark, ReassemblyUi.CyanMuted * 0.7f, 6.0f, true, 1.0f);
-            DrawString(_font, new Vector2(30, 126), $"LOCKED TARGET // {target.Name.ToUpperInvariant()}", HorizontalAlignment.Left, 280, 12, ReassemblyUi.CyanHighlight);
-            var kind = target.Kind == UniverseGenerator.CelestialKind.Planet ? "PLANET" : target.Kind == UniverseGenerator.CelestialKind.Station ? "STATION" : "BODY";
-            DrawString(_font, new Vector2(30, 146), $"{kind} · R {target.Radius:0} · DIST {target.SurfaceDistance(_playerPosition):0} M",
+            DrawString(_font, new Vector2(30, 126), $"已锁定目标 // {target.Name}", HorizontalAlignment.Left, 280, 12, ReassemblyUi.CyanHighlight);
+            var kind = target.Kind == UniverseGenerator.CelestialKind.Planet ? "行星" : target.Kind == UniverseGenerator.CelestialKind.Station ? "空间站" : "天体";
+            DrawString(_font, new Vector2(30, 146), $"{kind} · 半径 {target.Radius:0} · 距离 {target.SurfaceDistance(_playerPosition):0} M",
                 HorizontalAlignment.Left, 280, 11, ReassemblyUi.TextSteel);
             var inApproach = target.Position.DistanceTo(_playerPosition) <= target.ApproachRadius;
-            DrawString(_font, new Vector2(30, 168), inApproach ? "STATUS: IN ORBITAL APPROACH" : "STATUS: CRUISE TO TARGET",
+            DrawString(_font, new Vector2(30, 168), inApproach ? "状态：进轨接近中" : "状态：巡航飞往目标",
                 HorizontalAlignment.Left, 280, 11, inApproach ? ReassemblyUi.PhosphorGreen : ReassemblyUi.TextMuted);
         }
 
@@ -591,9 +598,9 @@ public partial class UniverseView : Node2D
         }
 
         var driveHint = _pilot.Scheme == ShipFlightController.ControlScheme.Keyboard
-            ? "W/S THRUST · A/D TURN · Q/E STRAFE"
-            : "WASD MOVE · CURSOR AIM · Q/E STRAFE";
-        DrawString(_font, new Vector2(16, ViewHeight - 44), $"PILOT [{_pilot.SchemeLabel.ToUpperInvariant()}] // {driveHint} · [R] TOGGLE SCHEME",
+            ? "W/S 推进 · A/D 转向 · Q/E 平移"
+            : "WASD 移动 · 光标瞄准 · Q/E 平移";
+        DrawString(_font, new Vector2(16, ViewHeight - 44), $"驾驶 [{_pilot.SchemeLabel}] // {driveHint} · [R] 切换操控方案",
             HorizontalAlignment.Left, -1, 11, ReassemblyUi.TextSteel);
         DrawString(_font, new Vector2(16, ViewHeight - 22), "[M] 造舰 · [J] 迁跃 · [H] 标记站点 · [F] 停靠 · [V] 派系 · [TAB] 指挥 · [SCROLL] 缩放",
             HorizontalAlignment.Left, -1, 11, ReassemblyUi.CyanMuted);
@@ -754,7 +761,7 @@ public partial class UniverseView : Node2D
         DrawCircle(mapCenter, 2.5f, ReassemblyUi.TextWhite);
         DrawCircle(mapCenter, 5.0f, ReassemblyUi.CyanHighlight * 0.6f, false, 1.0f);
 
-        DrawString(_font, mapPos + new Vector2(10, -10), "TACTICAL RADAR // 50KM", HorizontalAlignment.Left, -1, 10, ReassemblyUi.CyanHighlight);
+        DrawString(_font, mapPos + new Vector2(10, -10), "战术雷达 // 50KM", HorizontalAlignment.Left, -1, 10, ReassemblyUi.CyanHighlight);
     }
 
     private static Font CreateUiFont()

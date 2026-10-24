@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-public enum DiplomaticState { Neutral, Friendly, War }
+public enum DiplomaticState { Neutral, Friendly, War, Wanted }
 
 /// <summary>Faction identity is independent of ship design, paint and fleet ownership.</summary>
 public sealed class FactionRelations
@@ -37,6 +37,7 @@ public sealed class FactionRelations
         return _pairs.GetValueOrDefault(Key(a, b), DiplomaticState.Neutral);
     }
     public bool AtWar(int a, int b) => a != b && Get(a, b) == DiplomaticState.War;
+    public bool Hostile(int a, int b) => a != b && Get(a, b) is DiplomaticState.War or DiplomaticState.Wanted;
     public bool Friendly(int a, int b) => a == b || Get(a, b) == DiplomaticState.Friendly;
     public void Set(int a, int b, DiplomaticState state)
     {
@@ -45,5 +46,11 @@ public sealed class FactionRelations
         _pairs[Key(a, b)] = state;
     }
     public string Name(int faction, bool established = false) => faction == Player && established ? "玩家自治派系" : Names.GetValueOrDefault(faction, $"派系 {faction}");
-    public static string Label(DiplomaticState state) => state switch { DiplomaticState.War => "交战", DiplomaticState.Friendly => "友好", _ => "中立" };
+    public static string Label(DiplomaticState state) => state switch
+    {
+        DiplomaticState.War => "交战",
+        DiplomaticState.Wanted => "通缉",
+        DiplomaticState.Friendly => "友好",
+        _ => "中立"
+    };
 }

@@ -129,7 +129,7 @@ public partial class UpgradeScreen : Node2D
 
     private void DrawHeader()
     {
-        DrawString(_font, new Vector2(PanelX + 24, PanelY + 34), "VIEW UPGRADES  /  TECHNOLOGY DATABASE",
+        DrawString(_font, new Vector2(PanelX + 24, PanelY + 34), "查看升级  /  科技数据库",
             fontSize: 17, modulate: ReassemblyUi.TextWhite);
         DrawString(_font, new Vector2(PanelX + 24, PanelY + 57), "解密模块规格并永久加入造舰元件板",
             fontSize: 12, modulate: ReassemblyUi.TextMuted);
@@ -155,7 +155,8 @@ public partial class UpgradeScreen : Node2D
             var active = category == _category;
             ReassemblyUi.DrawChamferFrame(this, rect, active ? new Color("#12303a") : new Color("#0a141c"),
                 active ? ReassemblyUi.CyanHighlight : ReassemblyUi.PanelBorder, 3, false, active ? 1.2f : 0.8f);
-            DrawString(_font, rect.Position + new Vector2(0, 17), category, HorizontalAlignment.Center, width, 11,
+            DrawString(_font, rect.Position + new Vector2(0, 17), ReassemblyUi.FitText(_font, category, 11, width - 6),
+                HorizontalAlignment.Center, width, 11,
                 active ? ReassemblyUi.CyanHighlight : ReassemblyUi.TextMuted);
             x += width + 2;
         }
@@ -183,9 +184,11 @@ public partial class UpgradeScreen : Node2D
                 selected ? ReassemblyUi.CyanHighlight : unlocked ? ReassemblyUi.CyanMuted * 0.6f : ReassemblyUi.PanelBorder,
                 5, false, selected ? 1.4f : 0.9f);
             ModularShipVisual.DrawIcon(this, spec, rect.Position + new Vector2(32, 35), 23, encrypted: !unlocked);
-            DrawString(_font, rect.Position + new Vector2(64, 25), spec.Label, HorizontalAlignment.Left, CardWidth - 155, 13,
+            DrawString(_font, rect.Position + new Vector2(64, 25), ReassemblyUi.FitText(_font, spec.Label, 13, CardWidth - 155),
+                HorizontalAlignment.Left, CardWidth - 155, 13,
                 unlocked ? ReassemblyUi.TextSteel : ReassemblyUi.TextMuted);
-            DrawString(_font, rect.Position + new Vector2(64, 45), $"{ShapeName(spec)}  ·  {spec.Category}",
+            DrawString(_font, rect.Position + new Vector2(64, 45),
+                ReassemblyUi.FitText(_font, $"{ShapeName(spec)}  ·  {spec.Category}", 10, CardWidth - 155),
                 HorizontalAlignment.Left, CardWidth - 155, 10, ReassemblyUi.TextMuted);
             DrawString(_font, rect.Position + new Vector2(CardWidth - 72, 39), unlocked ? "已解密" : "待解密",
                 HorizontalAlignment.Center, 58, 10, unlocked ? ReassemblyUi.PhosphorGreen : ReassemblyUi.TextMuted);
@@ -207,11 +210,11 @@ public partial class UpgradeScreen : Node2D
         ReassemblyUi.DrawChamferFrame(this, rect, new Color("#08141d"), ReassemblyUi.CyanMuted * 0.65f, 7, false, 1);
         var spec = Selected;
         var unlocked = Progress.CanBuild(spec.Id);
-        DrawString(_font, new Vector2(rect.Position.X + 18, rect.Position.Y + 24), "BLOCK SPECIFICATION",
+        DrawString(_font, new Vector2(rect.Position.X + 18, rect.Position.Y + 24), "方块规格",
             fontSize: 10, modulate: ReassemblyUi.CyanHighlight);
         ModularShipVisual.DrawIcon(this, spec, new Vector2(rect.Position.X + rect.Size.X * 0.5f, rect.Position.Y + 112),
             82, encrypted: !unlocked);
-        DrawString(_font, new Vector2(rect.Position.X + 18, rect.Position.Y + 222), spec.Label,
+        DrawString(_font, new Vector2(rect.Position.X + 18, rect.Position.Y + 222), ReassemblyUi.FitText(_font, spec.Label, 20, rect.Size.X - 36),
             HorizontalAlignment.Center, rect.Size.X - 36, 20, ReassemblyUi.TextWhite);
         DrawString(_font, new Vector2(rect.Position.X + 18, rect.Position.Y + 247),
             $"{ShapeName(spec)}  ·  SCALE {spec.Scale}", HorizontalAlignment.Center, rect.Size.X - 36, 11, ReassemblyUi.TextMuted);
@@ -235,7 +238,8 @@ public partial class UpgradeScreen : Node2D
         DrawString(_font, _purchaseButton.Position + new Vector2(0, 24), unlocked ? "已解密 · 可在造舰页建造" : $"解密模块    {cost:N0} R",
             HorizontalAlignment.Center, _purchaseButton.Size.X, 13,
             unlocked ? ReassemblyUi.PhosphorGreen : canAfford ? ReassemblyUi.TextWhite : ReassemblyUi.TextMuted);
-        DrawString(_font, new Vector2(rect.Position.X + 18, rect.End.Y + 24), _notice,
+        DrawString(_font, new Vector2(rect.Position.X + 18, rect.End.Y + 24),
+            ReassemblyUi.FitText(_font, _notice, 11, rect.Size.X - 36),
             HorizontalAlignment.Left, rect.Size.X - 36, 11,
             _notice.Contains("不足", StringComparison.Ordinal) ? ReassemblyUi.TacticalAmber : ReassemblyUi.TextMuted);
     }
@@ -266,7 +270,7 @@ public partial class UpgradeScreen : Node2D
     private static string ShapeName(ShipShapeLibrary.ShapeSpec spec) =>
         !string.IsNullOrWhiteSpace(spec.NativeShapeName) ? spec.NativeShapeName
         : spec.NumId == 30001 ? "REWORLD"
-        : spec.NativeShape > 0 ? $"SHAPE {spec.NativeShape}" : "PROJECT MODULE";
+        : spec.NativeShape > 0 ? $"原版方块 {spec.NativeShape}" : "自制方块";
 
     private static int CategorySort(string category) => category switch
     {

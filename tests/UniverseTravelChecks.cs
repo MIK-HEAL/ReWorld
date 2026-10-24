@@ -83,7 +83,10 @@ public partial class UniverseTravelChecks : Node
                 Check(station.GetConnectedComponents().Count == 1 && station.Core is not null, "Station is one actual modular cluster");
                 Check(station.Blocks.All(b => station.CanPlace(b.ShapeId, b.Position, b.Angle, b)), "Station modules share edges without overlapping");
             }
-            Check(!UniverseGenerator.GenerateEnemyFactions, "Enemies remain disabled");
+            Check(UniverseGenerator.GenerateEnemyFactions, "Enemy faction traffic is enabled");
+            Check(view.Traffic.StationActors.Values.All(station => station.CollisionStatic &&
+                station.Ship.Blocks.Any(block => block.Spec.IsWeapon)),
+                "Generated stations are static collision bodies with offensive modules");
             foreach (var vessel in view.Traffic.Vessels)
                 Check(vessel.Ship.GetConnectedComponents().Count == 1 && vessel.Ship.Blocks.All(b => vessel.Ship.CanPlace(b.ShapeId, b.Position, b.Angle, b)),
                     "Friendly ship modules are connected and do not overlap");

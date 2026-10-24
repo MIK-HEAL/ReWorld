@@ -11,8 +11,13 @@ public class CombatVessel
     public Vector2 Position, PreviousPosition, Velocity;
     public float Heading, PreviousHeading, AngularVelocity;
     public bool Mineral;
+    /// <summary>Static combat bodies (stations/outposts) block moving ships but do not receive impulse motion.</summary>
+    public bool CollisionStatic;
     public string DepositId = "";
     public float Energy, Shield;
+    /// <summary>本帧累积的表面撞击速度与法向，由物理帧清零并施放为碰撞伤害。</summary>
+    public float SurfaceImpact;
+    public Vector2 SurfaceNormal;
     public float EnergyCapacity, Generation, ShieldCapacity, ShieldRadius, ShieldRegen;
     public CombatVessel? CombatTarget;
     public readonly Dictionary<int, float> Cooldowns = new();
@@ -80,6 +85,187 @@ public sealed class CombatWorld
     public readonly List<Debris> Fragments = new();
     public readonly List<Beam> Beams = new();
     public event Action<string>? DepositCollected;
+
+    /// <summary>World-space hull vertices for one actor, pooled across ticks so steady-state physics allocates nothing.</summary>
+    private sealed class CollisionGeometry
+    {
+        public readonly List<Vector2[]> Hulls = new();
+        public readonly List<ModularShip.Block> Blocks = new();
+        public int Count;
+        public float Radius;
+    }
+    private static readonly List<CollisionGeometry> _geometryPool = new();
+    private static readonly List<bool> _displaced = new();
+    private static readonly CollisionGeometry _queryGeometry = new(), _otherQueryGeometry = new();
+
+    private static void RefreshGeometry(CollisionGeometry geometry, CombatVessel actor)
+    {
+        var hulls = geometry.Hulls;
+        var blocks = geometry.Blocks;
+        var count = 0;
+        var radius = 0.0f;
+        var center = actor.Ship.CenterOfMass();
+        // Index Blocks instead of foreach: the IReadOnlyList enumerator boxes on every tick.
+        var shipBlocks = actor.Ship.Blocks;
+        for (var b = 0; b < shipBlocks.Count; b++)
+        {
+            var block = shipBlocks[b];
+            if (!block.Enabled || block.Health <= 0) continue;
+            var local = block.Spec.Vertices();
+            while (hulls.Count <= count) hulls.Add(Array.Empty<Vector2>());
+            while (blocks.Count <= count) blocks.Add(null!);
+            if (hulls[count].Length != local.Length) hulls[count] = new Vector2[local.Length];
+            blocks[count] = block;
+            var hull = hulls[count];
+            var offset = actor.Position + (block.Position - center).Rotated(actor.Heading);
+            var rotation = block.Angle + actor.Heading;
+            var reach = 0.0f;
+            for (var v = 0; v < local.Length; v++)
+            {
+                hull[v] = offset + local[v].Rotated(rotation);
+                var distance = hull[v].DistanceTo(actor.Position);
+                if (distance > reach) reach = distance;
+            }
+            if (reach > radius) radius = reach;
+            count++;
+        }
+        geometry.Count = count;
+        geometry.Radius = radius;
+    }
+
+    /// <summary>Resolve contact using the actual convex polygon of each live module.</summary>
+    public static void ResolveCollisions(IReadOnlyList<CombatVessel> actors)
+    {
+        var count = actors.Count;
+        while (_geometryPool.Count < count) _geometryPool.Add(new CollisionGeometry());
+        while (_displaced.Count < count) _displaced.Add(false);
+        for (var i = 0; i < count; i++)
+        {
+            var actor = actors[i];
+            if (actor.Alive && !actor.Mineral) RefreshGeometry(_geometryPool[i], actor);
+            else _geometryPool[i].Count = 0;
+            _displaced[i] = false;
+        }
+        for (var i = 0; i < count; i++)
+        {
+            var a = actors[i];
+            var geometryA = _geometryPool[i];
+            if (geometryA.Count == 0) continue;
+            for (var j = i + 1; j < count; j++)
+            {
+                var b = actors[j];
+                var geometryB = _geometryPool[j];
+                if (geometryB.Count == 0 || a.CollisionStatic && b.CollisionStatic) continue;
+                // A station is non-convex as a whole: escaping one module can still touch a neighboring module.
+                // Keep resolving the minimum module contact until the compound hull is clear.
+                for (var pass = 0; pass < 64; pass++)
+                {
+                    if (_displaced[i]) { RefreshGeometry(geometryA, a); _displaced[i] = false; }
+                    if (_displaced[j]) { RefreshGeometry(geometryB, b); _displaced[j] = false; }
+                    if (a.Position.DistanceTo(b.Position) > geometryA.Radius + geometryB.Radius) break;
+                    if (!TryGetContact(geometryA, geometryB, a, b, out var normal, out var penetration, out _, out _)) break;
+                    if (a.CollisionStatic)
+                    {
+                        b.Position += normal * (penetration + 0.1f);
+                        RemoveInwardVelocity(b, normal);
+                    }
+                    else if (b.CollisionStatic)
+                    {
+                        a.Position -= normal * (penetration + 0.1f);
+                        RemoveInwardVelocity(a, -normal);
+                    }
+                    else
+                    {
+                        var half = (penetration + 0.1f) * 0.5f;
+                        a.Position -= normal * half;
+                        b.Position += normal * half;
+                        RemoveInwardVelocity(a, -normal);
+                        RemoveInwardVelocity(b, normal);
+                    }
+                    a.PreviousPosition = a.Position;
+                    b.PreviousPosition = b.Position;
+                    _displaced[i] = _displaced[j] = true;
+                }
+            }
+        }
+
+        static void RemoveInwardVelocity(CombatVessel vessel, Vector2 outward)
+        {
+            var inward = vessel.Velocity.Dot(outward);
+            if (inward < 0) vessel.Velocity -= outward * inward;
+        }
+    }
+
+    public static bool Collides(CombatVessel a, CombatVessel b)
+    {
+        if (!a.Alive || a.Mineral || !b.Alive || b.Mineral) return false;
+        RefreshGeometry(_queryGeometry, a);
+        RefreshGeometry(_otherQueryGeometry, b);
+        return TryGetContact(_queryGeometry, _otherQueryGeometry, a, b, out _, out _, out _, out _);
+    }
+
+    private static bool TryGetContact(CollisionGeometry geometryA, CollisionGeometry geometryB,
+        CombatVessel a, CombatVessel b, out Vector2 normal, out float penetration,
+        out ModularShip.Block? blockA, out ModularShip.Block? blockB)
+    {
+        normal = Vector2.Zero;
+        penetration = float.MaxValue;
+        blockA = null;
+        blockB = null;
+        var hullsA = geometryA.Hulls;
+        var hullsB = geometryB.Hulls;
+        var blocksA = geometryA.Blocks;
+        var blocksB = geometryB.Blocks;
+        for (var i = 0; i < geometryA.Count; i++)
+        {
+            var verticesA = hullsA[i];
+            for (var j = 0; j < geometryB.Count; j++)
+            {
+                var verticesB = hullsB[j];
+                if (!TryOverlap(verticesA, verticesB, out var axis, out var depth) || depth >= penetration) continue;
+                if (axis.Dot(b.Position - a.Position) < 0) axis = -axis;
+                penetration = depth;
+                normal = axis;
+                blockA = blocksA[i];
+                blockB = blocksB[j];
+            }
+        }
+        return penetration < float.MaxValue;
+    }
+
+    private static bool TryOverlap(Vector2[] a, Vector2[] b, out Vector2 minimumAxis, out float minimumDepth)
+    {
+        minimumAxis = Vector2.Zero;
+        minimumDepth = float.MaxValue;
+        return OverlapsOnAxes(a, b, ref minimumAxis, ref minimumDepth)
+            && OverlapsOnAxes(b, a, ref minimumAxis, ref minimumDepth);
+    }
+
+    private static bool OverlapsOnAxes(Vector2[] hull, Vector2[] other, ref Vector2 minimumAxis, ref float minimumDepth)
+    {
+        for (var i = 0; i < hull.Length; i++)
+        {
+            var edge = hull[(i + 1) % hull.Length] - hull[i];
+            var axis = new Vector2(-edge.Y, edge.X).Normalized();
+            Project(hull, axis, out var minA, out var maxA);
+            Project(other, axis, out var minB, out var maxB);
+            var depth = Math.Min(maxA, maxB) - Math.Max(minA, minB);
+            if (depth <= 0) return false;
+            if (depth < minimumDepth) { minimumDepth = depth; minimumAxis = axis; }
+        }
+        return true;
+    }
+
+    private static void Project(Vector2[] polygon, Vector2 axis, out float min, out float max)
+    {
+        min = max = polygon[0].Dot(axis);
+        for (var i = 1; i < polygon.Length; i++)
+        {
+            var projection = polygon[i].Dot(axis);
+            min = Math.Min(min, projection);
+            max = Math.Max(max, projection);
+        }
+    }
     public CombatVessel? NearestHostile(CombatVessel vessel, IReadOnlyList<CombatVessel> actors, FactionRelations relations, float range = 4500)
     {
         CombatVessel? nearest = null;
@@ -87,7 +273,7 @@ public sealed class CombatWorld
         for (var i = 0; i < actors.Count; i++)
         {
             var other = actors[i];
-            if (!other.Alive || other.Mineral || !relations.AtWar(vessel.FactionId, other.FactionId)) continue;
+            if (!other.Alive || other.Mineral || !relations.Hostile(vessel.FactionId, other.FactionId)) continue;
             var d = other.Position.DistanceSquaredTo(vessel.Position);
             if (d < distance) { nearest = other; distance = d; }
         }
@@ -98,6 +284,8 @@ public sealed class CombatWorld
         CombatVessel? player = null, bool firing = false, Vector2? aim = null)
     {
         dt = Math.Clamp(dt, 0, 0.1f);
+        ResolveCollisionDamage(actors);
+        ResolveCollisions(actors);
         foreach (var beam in Beams) beam.Life -= dt;
         Beams.RemoveAll(b => b.Life <= 0);
         foreach (var fragment in Fragments) { fragment.Position += fragment.Velocity * dt; fragment.Heading += 0.2f * dt; fragment.Life -= dt; }
@@ -127,7 +315,7 @@ public sealed class CombatWorld
                     foreach (var p in Projectiles)
                     {
                         var distance = p.Position.DistanceSquaredTo(origin);
-                        if (p.Life > 0 && distance < nearest && relations.AtWar(actor.FactionId, p.Faction)) { missile = p; nearest = distance; }
+                        if (p.Life > 0 && distance < nearest && relations.Hostile(actor.FactionId, p.Faction)) { missile = p; nearest = distance; }
                     }
                     if (missile is not null && actor.Energy >= spec.FireEnergy)
                     {
@@ -177,11 +365,12 @@ public sealed class CombatWorld
             }
         }
         // Snapshot because drones may emit new projectiles.
-        foreach (var projectile in Projectiles.ToArray())
-        {
+        if (Projectiles.Count > 0)
+            foreach (var projectile in Projectiles.ToArray())
+            {
             if (projectile.Life <= 0) continue;
             projectile.Life -= dt;
-            if (projectile.Target is { } target && (!target.Alive || !relations.AtWar(projectile.Faction, target.FactionId))) projectile.Target = null;
+            if (projectile.Target is { } target && (!target.Alive || !relations.Hostile(projectile.Faction, target.FactionId))) projectile.Target = null;
             if (projectile.Kind is WeaponKind.Missile or WeaponKind.Drone && projectile.Target is { } homing)
             {
                 var speed = projectile.Velocity.Length();
@@ -199,7 +388,7 @@ public sealed class CombatWorld
                 for (var victimIndex = 0; victimIndex < actors.Count; victimIndex++)
                 {
                     var victim = actors[victimIndex];
-                    if (victim == hit.Actor || !victim.Alive || victim.Mineral || !relations.AtWar(victim.FactionId, projectile.Faction)) continue;
+                    if (victim == hit.Actor || !victim.Alive || victim.Mineral || !relations.Hostile(victim.FactionId, projectile.Faction)) continue;
                     foreach (var block in victim.Ship.Blocks.ToArray())
                     {
                         var pos = victim.Position + (block.Position - victim.Ship.CenterOfMass()).Rotated(victim.Heading);
@@ -208,6 +397,7 @@ public sealed class CombatWorld
                 }
         }
         Projectiles.RemoveAll(p => p.Life <= 0);
+        ResolveCollisions(actors);
     }
 
     private static void SpendShot(CombatVessel actor, ModularShip.Block block)
@@ -235,9 +425,10 @@ public sealed class CombatWorld
     public static Hit FindHit(Vector2 start, Vector2 end, CombatVessel owner, IReadOnlyList<CombatVessel> actors, FactionRelations relations)
     {
         var nearest = new Hit(null, null, 1);
-        foreach (var actor in actors)
+        for (var actorIndex = 0; actorIndex < actors.Count; actorIndex++)
         {
-            if (actor == owner || !actor.Alive || !actor.Mineral && !relations.AtWar(owner.FactionId, actor.FactionId)) continue;
+            var actor = actors[actorIndex];
+            if (actor == owner || !actor.Alive || !actor.Mineral && !relations.Hostile(owner.FactionId, actor.FactionId)) continue;
             if (actor.Shield > 0)
             {
                 var t = CircleFraction(start - actor.Position, end - actor.Position, actor.ShieldRadius);
@@ -279,6 +470,72 @@ public sealed class CombatWorld
         if (disc < 0) return 2;
         var t = (-bb - Mathf.Sqrt(disc)) / (2 * aa);
         return t >= 0 && t <= 1 ? t : 2;
+    }
+    public const float SurfaceDamageBase = 15f;
+    public const float SurfaceDamagePerSpeed = 0.6f;
+    public const float CollisionDamageThreshold = 120f;
+    public const float CollisionDamagePerSpeed = 0.4f;
+
+    /// <summary>恒星/行星表面碰撞：碰到就有基础伤害，按撞击速度加成；护盾先吸收。</summary>
+    public void SurfaceImpact(CombatVessel actor, float impactSpeed, Vector2 normal)
+    {
+        // normal points from the body toward the ship; the contact face faces the body, i.e. -normal.
+        actor.Refresh();
+        var damage = SurfaceDamageBase + impactSpeed * SurfaceDamagePerSpeed;
+        ApplyDamage(actor, ContactBlock(actor, -normal), damage, -normal);
+    }
+
+    /// <summary>舰船间高速碰撞：相对速度超过阈值后，对 SAT 检测到的真实接触方块互伤。</summary>
+    private void ResolveCollisionDamage(IReadOnlyList<CombatVessel> actors)
+    {
+        var count = actors.Count;
+        while (_geometryPool.Count < count) _geometryPool.Add(new CollisionGeometry());
+        while (_displaced.Count < count) _displaced.Add(false);
+        // Refresh the shared per-actor pool once: each actor keeps its own hull arrays, so steady state allocates nothing.
+        for (var i = 0; i < count; i++)
+        {
+            var actor = actors[i];
+            if (actor.Alive && !actor.Mineral) RefreshGeometry(_geometryPool[i], actor);
+            else _geometryPool[i].Count = 0;
+            _displaced[i] = false;
+        }
+        for (var i = 0; i < count; i++)
+        {
+            var a = actors[i];
+            var geometryA = _geometryPool[i];
+            if (geometryA.Count == 0) continue;
+            for (var j = i + 1; j < count; j++)
+            {
+                var b = actors[j];
+                var geometryB = _geometryPool[j];
+                if (geometryB.Count == 0 || a.CollisionStatic && b.CollisionStatic) continue;
+                if (a.Position.DistanceTo(b.Position) > geometryA.Radius + geometryB.Radius) continue;
+                if (!TryGetContact(geometryA, geometryB, a, b, out var normal, out _, out var blockA, out var blockB)) continue;
+                var relative = a.Velocity - b.Velocity;
+                var speed = relative.Length();
+                if (speed <= CollisionDamageThreshold) continue;
+                // Damage the blocks that actually touched, along the contact normal.
+                var damage = (speed - CollisionDamageThreshold) * CollisionDamagePerSpeed;
+                if (blockA is { } hitA) ApplyDamage(a, hitA, damage, normal);
+                if (blockB is { } hitB) ApplyDamage(b, hitB, damage, -normal);
+            }
+        }
+    }
+
+    private static ModularShip.Block? ContactBlock(CombatVessel actor, Vector2 toward)
+    {
+        if (actor.Active.Length == 0) return null;
+        ModularShip.Block? best = null;
+        var bestDot = float.MinValue;
+        var center = actor.Ship.CenterOfMass();
+        for (var i = 0; i < actor.Active.Length; i++)
+        {
+            var block = actor.Active[i];
+            var local = (block.Position - center).Rotated(actor.Heading);
+            var dot = local.Dot(toward);
+            if (dot > bestDot) { bestDot = dot; best = block; }
+        }
+        return best;
     }
     public void ApplyDamage(CombatVessel actor, ModularShip.Block? block, float damage, Vector2 direction)
     {

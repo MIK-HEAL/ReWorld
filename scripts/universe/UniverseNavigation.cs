@@ -19,18 +19,19 @@ public static class UniverseNavigation
         return planet.Position + Vector2.Left * (planet.Radius + shipRadius + 32);
     }
 
-    /// <summary>阻止舰体穿进星球；只消除朝内速度，保留沿表面的切向运动。</summary>
-    public static bool ResolveSurface(UniverseGenerator.CelestialBody body, float shipRadius,
+    /// <summary>阻止舰体穿进星球；只消除朝内速度，保留沿表面的切向运动。
+    /// 返回被消除的朝内速度大小（&gt;0 表示撞上表面，0 表示未接触）。</summary>
+    public static float ResolveSurface(UniverseGenerator.CelestialBody body, float shipRadius,
         ref Vector2 position, ref Vector2 velocity)
     {
-        if (!body.HasSurface) return false;
+        if (!body.HasSurface) return 0;
         var offset = position - body.Position;
         var minimumDistance = body.Radius + shipRadius + 16;
-        if (offset.LengthSquared() >= minimumDistance * minimumDistance) return false;
+        if (offset.LengthSquared() >= minimumDistance * minimumDistance) return 0;
         var normal = offset.IsZeroApprox() ? Vector2.Left : offset.Normalized();
         position = body.Position + normal * minimumDistance;
         var inwardSpeed = velocity.Dot(normal);
         if (inwardSpeed < 0) velocity -= normal * inwardSpeed;
-        return true;
+        return inwardSpeed < 0 ? -inwardSpeed : 0;
     }
 }

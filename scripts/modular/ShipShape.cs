@@ -260,10 +260,11 @@ public static partial class ShipShapeLibrary
         public Vector2 WeaponDirection { get; init; } = Vector2.Right;
 
         /// <summary>顶点（兼容旧 API：若无 VerticesField 则按 Sides 生成正多边形）。</summary>
+        private Vector2[]? _lazyVertices;
         public Vector2[] Vertices()
         {
             if (VerticesField.Length > 0) return VerticesField;
-            return _regularPolyVertices(Sides, Radius, StartAngle);
+            return _lazyVertices ??= _regularPolyVertices(Sides, Radius, StartAngle);
         }
 
         // —— 兼容旧字段（仅在 VerticesField 为空时用于自动生成正多边形）——

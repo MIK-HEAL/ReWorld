@@ -98,6 +98,29 @@ public static class ReassemblyUi
     }
 
     /// <summary>
+    /// 按像素宽度截断文本并以省略号收尾（基于字体实测宽度），避免自绘 UI 文本溢出重叠。
+    /// </summary>
+    public static string FitText(Font font, string text, int fontSize, float maxWidth)
+    {
+        if (string.IsNullOrEmpty(text)) return text ?? string.Empty;
+        if (maxWidth <= 0) return text;
+        if (font.GetStringSize(text, fontSize: fontSize).X <= maxWidth) return text;
+        const string ellipsis = "…";
+        var budget = maxWidth - font.GetStringSize(ellipsis, fontSize: fontSize).X;
+        if (budget <= 0) return ellipsis;
+        // 二分查找可容纳的最大字符数
+        var lo = 0;
+        var hi = text.Length;
+        while (lo < hi)
+        {
+            var mid = (lo + hi + 1) / 2;
+            if (font.GetStringSize(text[..mid], fontSize: fontSize).X <= budget) lo = mid;
+            else hi = mid - 1;
+        }
+        return lo <= 0 ? ellipsis : text[..lo] + ellipsis;
+    }
+
+    /// <summary>
     /// 绘制 Reassembly 经典分段能量/状态槽 (Segmented Meter)。
     /// </summary>
     public static void DrawSegmentedMeter(
@@ -237,7 +260,7 @@ public static class ReassemblyUi
             // 目标信息悬浮标牌
             if (!string.IsNullOrEmpty(targetLabel) && font is not null)
             {
-                var labelText = $"{targetLabel.ToUpperInvariant()} // {targetDistance:0}M";
+                var labelText = $"{targetLabel} · {targetDistance:0}M";
                 item.DrawString(font, tPos + new Vector2(bracketSize + 6, 4), labelText, HorizontalAlignment.Left, -1, 10, CyanHighlight);
             }
         }

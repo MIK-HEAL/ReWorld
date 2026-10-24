@@ -29,12 +29,15 @@ public sealed class UniverseTraffic
     {
         var ship = new ModularShip();
         var core = ship.AddBlock("ra_200", Vector2.Zero, 0);
+        var weaponHosts = new List<ModularShip.Block>();
         // Radial branches use the same edge-port connection model as the editor.
         foreach (var p in new[] { 0, 2, 4, 5 })
         {
             var block = Attach(ship, core, p, "ra_219", 2);
             for (var i = 0; i < 3; i++) block = Attach(ship, block, 0, i == 2 ? "ra_205" : "ra_219", 2);
+            weaponHosts.Add(block);
         }
+        foreach (var host in weaponHosts) Attach(ship, host, 1, "ra_56", 2);
         return ship;
     }
     private static ModularShip.Block Attach(ModularShip ship, ModularShip.Block host, int port, string shape, int self)
@@ -67,14 +70,17 @@ public sealed class UniverseTraffic
             var ship = BuildStation();
             Stations.Add(station.Id, ship);
             StationActors.Add(station.Id, new CombatVessel { Name = station.Name, Ship = ship, FactionId = FactionRelations.League,
-                Position = station.Position, PreviousPosition = station.Position });
+                Position = station.Position, PreviousPosition = station.Position, CollisionStatic = true });
             AddVessel("联航巡逻舰", station.Position + Vector2.Up * 700, station.Position, false);
             AddVessel("联航运输舰", station.Position + Vector2.Left * 900, station.Position, false);
         }
         AddVessel("联航勘测舰", player + new Vector2(-480, -280), player, false);
         AddVessel("联航巡逻舰", player + new Vector2(-680, 280), player, false);
-        AddVessel("赤色行商", player + new Vector2(1600, -600), player + new Vector2(1600, -600), false, FactionRelations.Red);
-        AddVessel("晶体勘探舰", player + new Vector2(-1700, 900), player + new Vector2(-1700, 900), false, FactionRelations.Crystal);
+        if (UniverseGenerator.GenerateEnemyFactions)
+        {
+            AddVessel("赤色行商", player + new Vector2(1600, -600), player + new Vector2(1600, -600), false, FactionRelations.Red);
+            AddVessel("晶体勘探舰", player + new Vector2(-1700, 900), player + new Vector2(-1700, 900), false, FactionRelations.Crystal);
+        }
         _visitedVessels[cell] = new List<Vessel>(Vessels);
         _visitedStations[cell] = new Dictionary<string, CombatVessel>(StationActors);
         BringFleet(player);
@@ -147,7 +153,14 @@ public sealed class UniverseTraffic
                 acceleration, result.Torque / v.Profile.MomentOfInertia, dt);
             // IReadOnlyList enumeration boxes List<T>.Enumerator; avoid six allocations per tick.
             for (var b = 0; b < bodies.Count; b++)
-                UniverseNavigation.ResolveSurface(bodies[b], v.Radius, ref v.Position, ref v.Velocity);
+            {
+                var impact = UniverseNavigation.ResolveSurface(bodies[b], v.Radius, ref v.Position, ref v.Velocity);
+                if (impact > 0 && bodies[b].CausesSurfaceDamage)
+                {
+                    if (impact > v.SurfaceImpact)
+                    { v.SurfaceImpact = impact; v.SurfaceNormal = (v.Position - bodies[b].Position).Normalized(); }
+                }
+            }
         }
     }
 }

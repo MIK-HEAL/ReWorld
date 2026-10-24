@@ -73,8 +73,15 @@ public sealed partial class ModularShip
         };
     }
 
+    /// <summary>蓝图条目：记录方块的形状/位置/朝向，用于被摧毁后 regrow。</summary>
+    public readonly record struct BlueprintEntry(string ShapeId, Vector2 Position, float Angle);
+
     private readonly List<Block> _blocks = new();
     private int _nextId = 1;
+
+    /// <summary>建造蓝图：记录船"完整设计"的方块列表，被摧毁方块从中 regrow。</summary>
+    /// <remarks>AddBlock 追加、RemoveBlock 移除；DamageBlock 摧毁方块不更新蓝图（保留为 regrow 目标）。</remarks>
+    private readonly List<BlueprintEntry> _blueprint = new();
 
     public IReadOnlyList<Block> Blocks => _blocks;
     public event Action? Changed;
@@ -104,6 +111,7 @@ public sealed partial class ModularShip
             Health = ShipShapeLibrary.Get(shapeId).Hull };
         _blocks.Add(block);
         block.GeometryChanged = InvalidateGeometry;
+        _blueprint.Add(new BlueprintEntry(shapeId, position, angle));
         InvalidateGeometry();
         RefreshConnections();
         Changed?.Invoke();
@@ -117,6 +125,10 @@ public sealed partial class ModularShip
         if (!_blocks.Remove(block))
             return false;
         block.GeometryChanged = null;
+        // Player-removed blocks leave the blueprint too: they should not regrow.
+        for (var i = _blueprint.Count - 1; i >= 0; i--)
+            if (_blueprint[i].ShapeId == block.ShapeId && _blueprint[i].Position == block.Position && _blueprint[i].Angle == block.Angle)
+            { _blueprint.RemoveAt(i); break; }
         InvalidateGeometry();
         RefreshConnections();
         Changed?.Invoke();
@@ -184,6 +196,7 @@ public sealed partial class ModularShip
             cloned.GeometryChanged = copy.InvalidateGeometry;
             copy._blocks.Add(cloned);
         }
+        copy._blueprint.AddRange(_blueprint);
         copy.RefreshConnections();
         return copy;
     }
@@ -196,6 +209,92 @@ public sealed partial class ModularShip
             block.Health = block.Spec.Hull;
             block.Enabled = true;
         }
+    }
+
+    /// <summary>重建蓝图为当前存活方块的快照（SeedReferenceShip / Clone 后调用）。</summary>
+    public void SnapshotBlueprint()
+    {
+        _blueprint.Clear();
+        for (var i = 0; i < _blocks.Count; i++)
+        {
+            var b = _blocks[i];
+            _blueprint.Add(new BlueprintEntry(b.ShapeId, b.Position, b.Angle));
+        }
+    }
+
+    /// <summary>每秒修复速率（health/s）；低于 Reassembly 原版以体现资源消耗的缓慢感。</summary>
+    public const float RepairRate = 12f;
+    /// <summary>回血每点消耗的资源（R/health）。</summary>
+    public const float RepairHealthCost = 0.5f;
+    /// <summary>regrow 一个方块的资源成本系数（mass × 此值）。</summary>
+    public const float RegrowMassCost = 4f;
+
+    /// <summary>
+    /// 缓慢修复舰体：受损方块回血 + 蓝图中被摧毁方块从存活邻居 regrow。
+    /// 返回本次消耗的资源（R）；调用方按需扣除。资源不足时回退本次修复量。
+    /// </summary>
+    /// <param name="dt">帧时长（秒）。</param>
+    /// <param name="available">可用资源（R）；修复不会超过此额度。</param>
+    /// <returns>实际消耗的资源。</returns>
+    public float TickRepair(float dt, float available)
+    {
+        var spent = 0f;
+        // 1. Damaged live blocks slowly heal toward full.
+        for (var i = 0; i < _blocks.Count; i++)
+        {
+            var block = _blocks[i];
+            if (block.Health <= 0 || block.Health >= block.Spec.Hull) continue;
+            var heal = Math.Min(block.Spec.Hull - block.Health, RepairRate * dt);
+            var cost = heal * RepairHealthCost;
+            if (spent + cost > available) break;
+            block.Health += heal;
+            spent += cost;
+        }
+        // 2. Regrow destroyed blocks that still have a live neighbor touching their blueprint slot.
+        for (var i = 0; i < _blueprint.Count; i++)
+        {
+            var entry = _blueprint[i];
+            if (HasLiveBlockAt(entry.Position, entry.ShapeId)) continue;
+            if (!HasLiveNeighbor(entry.Position, entry.Angle, entry.ShapeId)) continue;
+            var cost = ShipShapeLibrary.Get(entry.ShapeId).Mass * RegrowMassCost;
+            if (spent + cost > available) break;
+            var block = AddBlock(entry.ShapeId, entry.Position, entry.Angle);
+            block.Health = 1f; // start almost dead and grow back over time
+            spent += cost;
+        }
+        return spent;
+    }
+
+    private bool HasLiveBlockAt(Vector2 position, string shapeId)
+    {
+        for (var i = 0; i < _blocks.Count; i++)
+        {
+            var b = _blocks[i];
+            if (b.ShapeId == shapeId && b.Position == position && b.Health > 0) return true;
+        }
+        return false;
+    }
+
+    private bool HasLiveNeighbor(Vector2 position, float angle, string shapeId)
+    {
+        var spec = ShipShapeLibrary.Get(shapeId);
+        var ports = spec.Ports;
+        for (var i = 0; i < _blocks.Count; i++)
+        {
+            var b = _blocks[i];
+            if (b.Health <= 0) continue;
+            var bPorts = b.Spec.Ports;
+            for (var p = 0; p < ports.Count; p++)
+            {
+                var portWorld = position + ports[p].Offset.Rotated(angle);
+                for (var q = 0; q < bPorts.Count; q++)
+                {
+                    var otherPort = b.Position + bPorts[q].Offset.Rotated(b.Angle);
+                    if (portWorld.DistanceSquaredTo(otherPort) < 2.25f) return true;
+                }
+            }
+        }
+        return false;
     }
 
     /// <summary>一个推进器挂点（用于运行时推力/转向计算）。</summary>
@@ -538,6 +637,7 @@ public sealed partial class ModularShip
         AttachTo(lower, 2, "ra_54", 0);
         AttachTo(bow, 0, "ra_56", 2);
         AttachTo(bow, 1, "hyperdrive", 3);
+        SnapshotBlueprint();
         Changed?.Invoke();
     }
 

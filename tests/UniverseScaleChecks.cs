@@ -50,7 +50,7 @@ public partial class UniverseScaleChecks : Node
                         Check(bodies.Where(b => b.HasSurface).All(b => b.SurfaceDistance(spawn) >= 97), "Spawn clears every solid body");
                         var velocity = new Vector2(-100, 35);
                         var position = body.Position + Vector2.Right * (body.Radius + 20);
-                        Check(UniverseNavigation.ResolveSurface(body, 65, ref position, ref velocity), "Ship contact uses actual planet radius");
+                        Check(UniverseNavigation.ResolveSurface(body, 65, ref position, ref velocity) > 0, "Ship contact uses actual planet radius");
                         Check(Mathf.Abs(body.SurfaceDistance(position) - 81) < 0.02f && Mathf.Abs(velocity.X) < 0.01f && velocity.Y == 35,
                             "Surface contact removes inward velocity and preserves tangential flight");
                         velocity = Vector2.Right * 100;
@@ -58,11 +58,13 @@ public partial class UniverseScaleChecks : Node
                         UniverseNavigation.ResolveSurface(body, 65, ref position, ref velocity);
                         Check(float.IsFinite(position.X) && float.IsFinite(position.Y) && body.SurfaceDistance(position) > 80,
                             "Even an inside-body position resolves without a zero-normal singularity");
+                        Check(!body.CausesSurfaceDamage, "Planets bounce ships without dealing surface damage");
                     }
                     if (body.Kind == UniverseGenerator.CelestialKind.Star)
                     {
                         stars++;
                         Check(body.Radius > UniverseGenerator.PlanetRadiusMax, "Stars remain larger than planets");
+                        Check(body.CausesSurfaceDamage, "Stars deal surface contact damage");
                     }
                 }
             }
@@ -77,7 +79,7 @@ public partial class UniverseScaleChecks : Node
                     "Planetary systems avoid overlapping bodies even across sector boundaries");
             Check(planets > 30 && stars >= 9, "Sample covers many complete planetary systems");
             Systems();
-            Check(!UniverseGenerator.GenerateEnemyFactions, "No hostile faction generation");
+            Check(UniverseGenerator.GenerateEnemyFactions, "Hostile faction generation is enabled");
             var view = new UniverseView();
             AddChild(view);
             view.SetProcess(false);

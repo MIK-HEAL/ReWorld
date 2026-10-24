@@ -24,7 +24,7 @@ public partial class FactionCombatChecks : Node
     {
         try
         {
-            Catalog(); GroundTruthCatalog(); Technology(); DiplomacyAndWeapons(); DamageAndResources(); Campaign();
+            Catalog(); GroundTruthCatalog(); Technology(); DiplomacyAndWeapons(); DamageAndResources(); Campaign(); DeathRespawnPhysics(); RepairAndRegrow();
             GD.Print($"FACTION_COMBAT_CHECKS_PASS: {_checks} assertions; catalog={ShipShapeLibrary.Shapes.Count}, registrations={ShipShapeLibrary.RegisteredCount}");
             GetTree().Quit();
         }
@@ -118,6 +118,7 @@ public partial class FactionCombatChecks : Node
         var actors = new[] { a, b }; var combat = new CombatWorld();
         for (var i = 0; i < 120; i++) combat.Step(1f / 60, actors, relations);
         Check(combat.Projectiles.Count == 0 && a.CombatTarget is null && b.CombatTarget is null, "Different factions stay peaceful without war");
+        Check(!relations.Hostile(1, 8) && !relations.Hostile(1, 3), "All factions begin neutral to the independent player");
         relations.Set(1, 8, DiplomaticState.Friendly);
         Check(combat.NearestHostile(a, actors, relations) is null, "Friendly identity does not become an attack target");
         relations.Set(1, 8, DiplomaticState.War);
@@ -137,6 +138,10 @@ public partial class FactionCombatChecks : Node
         var c = Vessel(3, new Vector2(300, 0));
         relations.Set(8, 3, DiplomaticState.War);
         Check(combat.NearestHostile(b, new[] { a, b, c }, relations) == c, "NPC factions use their own pairwise relations");
+        relations.Set(1, 8, DiplomaticState.Wanted);
+        Check(relations.Hostile(1, 8) && combat.NearestHostile(a, actors, relations) == b,
+            "Wanted status enables hostile targeting");
+        relations.Set(1, 8, DiplomaticState.Neutral);
         a.Refresh(); a.Energy = 0; a.Generation = 0; a.Cooldowns.Clear();
         var empty = new CombatWorld(); relations.Set(1, 3, DiplomaticState.War);
         empty.Step(1f / 60, new[] { a, c }, relations);
@@ -156,6 +161,29 @@ public partial class FactionCombatChecks : Node
         relations.Set(1, 3, DiplomaticState.War);
         var lasers = new CombatWorld(); lasers.Step(0.016f, new[] { beamShip, c }, relations);
         Check(lasers.Beams.Count > 0, "Beam weapons use immediate ray hits");
+
+        var stationShip = UniverseTraffic.BuildStation();
+        var station = new CombatVessel { Name = "Station", Ship = stationShip, FactionId = FactionRelations.League,
+            Position = Vector2.Zero, PreviousPosition = Vector2.Zero, CollisionStatic = true };
+        station.Refresh();
+        Check(stationShip.GetConnectedComponents().Count == 1 && station.Active.Any(b => b.Spec.IsWeapon),
+            "Stations are connected combat bodies with working weapons");
+        Check(station.ShieldCapacity == 0, "Stations do not receive planet-like shield protection");
+        var shipAtStation = Vessel(FactionRelations.Player, new Vector2(1, 0));
+        shipAtStation.Velocity = Vector2.Left * 100;
+        CombatWorld.ResolveCollisions(new[] { station, shipAtStation });
+        Check(!CombatWorld.Collides(station, shipAtStation)
+            && shipAtStation.Velocity.Dot((shipAtStation.Position - station.Position).Normalized()) >= 0,
+            "Ships collide with station hulls and cannot pass through them");
+
+        var hostile = Vessel(FactionRelations.Red, new Vector2(300, 0));
+        var stationRelations = new FactionRelations();
+        var stationCombat = new CombatWorld();
+        stationCombat.Step(1f / 60, new[] { station, hostile }, stationRelations);
+        Check(!stationCombat.Projectiles.Any(p => p.Owner == station), "Station weapons stay idle while neutral");
+        stationRelations.Set(FactionRelations.League, FactionRelations.Red, DiplomaticState.War);
+        stationCombat.Step(1f / 60, new[] { station, hostile }, stationRelations);
+        Check(stationCombat.Projectiles.Any(p => p.Owner == station), "Station weapons engage factions at war");
     }
     private void DamageAndResources()
     {
@@ -172,6 +200,43 @@ public partial class FactionCombatChecks : Node
         Check(!mineral.Alive && combat.Resources.Count == 1, "Mining produces a resource pocket");
         Check(combat.Collect(new Vector2(1000, 0), 100) == 0, "Distant resources cannot be collected");
         Check(combat.Collect(Vector2.Zero, 100) == 90 && combat.Collect(Vector2.Zero, 100) == 0, "Resource pocket pays out once");
+
+        var rammer = Vessel(FactionRelations.Player, new Vector2(0, 0)); rammer.Velocity = Vector2.Right * 400;
+        var target = Vessel(FactionRelations.League, new Vector2(62, 0));
+        var ramHull = rammer.Ship.Blocks.Sum(b => b.Health); var targetHull = target.Ship.Blocks.Sum(b => b.Health);
+        var ramHealth = rammer.Ship.Blocks.ToDictionary(b => b, b => b.Health);
+        var targetHealth = target.Ship.Blocks.ToDictionary(b => b, b => b.Health);
+        var ramCombat = new CombatWorld();
+        rammer.Position += rammer.Velocity * (1f / 60);
+        // Capture each block's world X at the moment of impact; the contact face faces the other ship.
+        var ramWorld = rammer.Ship.Blocks.ToDictionary(b => b,
+            b => (rammer.Position + (b.Position - rammer.Ship.CenterOfMass())).X);
+        var targetWorld = target.Ship.Blocks.ToDictionary(b => b,
+            b => (target.Position + (b.Position - target.Ship.CenterOfMass())).X);
+        ramCombat.Step(1f / 60, new[] { rammer, target }, new FactionRelations());
+        Check(rammer.Ship.Blocks.Sum(b => b.Health) < ramHull && target.Ship.Blocks.Sum(b => b.Health) < targetHull,
+            "High-speed ramming damages both hulls when relative speed exceeds the threshold");
+        // The damaged block must be the SAT contact, not a guess by velocity direction.
+        // Geometric proof: the hit block's world X lies in the hull overlap window
+        // [target's leftmost face, rammer's rightmost face] — i.e. it was actually touching.
+        var overlapMin = targetWorld.Values.Min();   // target's leftmost face (toward rammer)
+        var overlapMax = ramWorld.Values.Max();       // rammer's rightmost face (toward target)
+        var ramDestroyed = ramHealth.Keys.Except(rammer.Ship.Blocks).ToList();
+        var targetDamaged = target.Ship.Blocks.Where(b => b.Health < targetHealth[b]).ToList();
+        Check(ramDestroyed.Count == 1 && ramWorld[ramDestroyed[0]] >= overlapMin && ramWorld[ramDestroyed[0]] <= overlapMax,
+            "Ramming destroys the block actually touching the target (in the hull overlap window), not a guess by velocity direction");
+        Check(targetDamaged.Count == 1 && targetWorld[targetDamaged[0]] >= overlapMin && targetWorld[targetDamaged[0]] <= overlapMax,
+            "Ramming damages the block actually touching the rammer (in the hull overlap window), not a guess by velocity direction");
+        var slowTarget = Vessel(FactionRelations.League, new Vector2(10, 0));
+        var slowHull = slowTarget.Ship.Blocks.Sum(b => b.Health);
+        var gentle = Vessel(FactionRelations.Player, new Vector2(0, 0)); gentle.Velocity = Vector2.Right * 50;
+        new CombatWorld().Step(1f / 60, new[] { gentle, slowTarget }, new FactionRelations());
+        Check(slowTarget.Ship.Blocks.Sum(b => b.Health) == slowHull, "Below-threshold relative speed deals no collision damage");
+
+        var surface = Vessel(FactionRelations.Player, Vector2.Zero);
+        var surfaceHull = surface.Ship.Blocks.Sum(b => b.Health);
+        new CombatWorld().SurfaceImpact(surface, 200, Vector2.Right);
+        Check(surface.Ship.Blocks.Sum(b => b.Health) < surfaceHull, "Hitting a stellar surface always deals base damage");
     }
     private void Campaign()
     {
@@ -179,20 +244,104 @@ public partial class FactionCombatChecks : Node
         view.SetPhysicsProcess(false);
         Check(view.Traffic.Vessels.All(v => !v.PlayerOwned && !v.Escort), "Player starts alone; old teammates belong to independent factions");
         Check(!view.Progress.Established && !view.ManufactureFleetShip(), "Independent captain cannot spawn a free faction fleet");
-        Check(!view.Progress.Diplomacy.AtWar(1, 8), "Initial station access is peaceful");
+        Check(!view.Progress.Diplomacy.Hostile(1, 8) && !view.Progress.Diplomacy.Hostile(1, 3),
+            "Captain starts independent and is neutral to every faction");
         Check(view.AidFaction(8) && view.Progress.Diplomacy.Friendly(1, 8), "Paid aid changes diplomatic relations");
         view.ChangeRelation(8, DiplomaticState.War);
         Check(!view.AidFaction(8), "Aid does not silently bypass an active war");
         Check(!view.ToggleDock(), "Warring station rejects docking");
         view.ChangeRelation(8, DiplomaticState.Neutral);
-        view._Input(new InputEventKey { Keycode = Key.Tab, Pressed = true });
-        Check(view.TableOpen, "Tab enters command mode");
-        var own = view.Traffic.AddOwned(ship.Clone(), view.PlayerPosition + Vector2.Right * 400, "Owned");
-        Check(own.PlayerOwned && view.Traffic.Vessels.Where(v => v != own).All(v => !v.PlayerOwned), "Friendliness never grants fleet ownership");
-        view.Traffic.Load(Vector2I.Right, new Vector2(144000, 0));
-        Check(view.Traffic.Vessels.Count(v => v.PlayerOwned) == 1 && view.Traffic.Vessels.Contains(own), "Owned fleet travels with the captain");
-        view.Traffic.Load(Vector2I.Zero, view.PlayerPosition);
-        Check(view.Traffic.Vessels.Count(v => v.PlayerOwned) == 1, "Revisiting cells never duplicates owned ships");
+
+        ship.DamageBlock(ship.Core!, 10000);
+        view.Progress.Resources = 50;
+        var commits = 0;
+        view.Progress.Changed += () => commits++;
+        Check(!view.TryRespawn() && ship.Core is null && view.Progress.Resources == 50 && commits == 0,
+            "Core loss cannot respawn without the fee");
+        view.Progress.Resources = 100;
+        foreach (var station in view.Traffic.StationActors.Values) station.Ship.DamageBlock(station.Ship.Core!, 10000);
+        Check(!view.TryRespawn() && ship.Core is null && view.Progress.Resources == 100 && commits == 0,
+            "No live non-hostile site means no rebuild and no debit");
         view.QueueFree();
+
+        var respawnView = new UniverseView(); var respawnShip = new ModularShip(); respawnShip.SeedReferenceShip();
+        respawnView.SetShip(respawnShip); AddChild(respawnView); respawnView.SetPhysicsProcess(false);
+        respawnShip.DamageBlock(respawnShip.Core!, 10000);
+        Check(respawnView.TryRespawn() && respawnShip.HasLiveCore && respawnView.Progress.Resources == 150
+            && respawnView.PlayerVelocity.IsZeroApprox(),
+            "Successful station respawn rebuilds the command core for 100 R and clears momentum");
+        Check(respawnView.PlayerCombat is not null && respawnView.Traffic.StationActors.Values.All(station =>
+                !station.Alive || !CombatWorld.Collides(respawnView.PlayerCombat, station)),
+            "Respawn clearance accounts for the station hull");
+
+        respawnView.Progress.Collect(1000);
+        Check(respawnView.EstablishBase(), "Outpost can be established after respawn");
+        respawnView.ChangeRelation(FactionRelations.League, DiplomaticState.War);
+        respawnShip.DamageBlock(respawnShip.Core!, 10000);
+        respawnView.Progress.Collect(UniverseView.RespawnCost);
+        Check(respawnView.TryRespawn() && respawnShip.HasLiveCore && respawnView.Progress.Resources == 150,
+            "Own outpost remains available when other stations are hostile");
+        var baseField = typeof(UniverseView).GetField("_playerBase", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var outpost = (CombatVessel)baseField.GetValue(respawnView)!;
+        Check(!CombatWorld.Collides(respawnView.PlayerCombat!, outpost)
+            && respawnView.PlayerPosition.DistanceTo(new Vector2(respawnView.Progress.BaseX, respawnView.Progress.BaseY)) > outpost.Ship.BoundingRadius(),
+            "Outpost respawn is outside the outpost hull");
+
+        respawnView.ChangeRelation(FactionRelations.League, DiplomaticState.Neutral);
+        respawnView._Input(new InputEventKey { Keycode = Key.Tab, Pressed = true });
+        Check(respawnView.TableOpen, "Tab enters command mode");
+        var own = respawnView.Traffic.AddOwned(respawnShip.Clone(), respawnView.PlayerPosition + Vector2.Right * 400, "Owned");
+        Check(own.PlayerOwned && respawnView.Traffic.Vessels.Where(v => v != own).All(v => !v.PlayerOwned), "Friendliness never grants fleet ownership");
+        respawnView.Traffic.Load(Vector2I.Right, new Vector2(144000, 0));
+        Check(respawnView.Traffic.Vessels.Count(v => v.PlayerOwned) == 1 && respawnView.Traffic.Vessels.Contains(own), "Owned fleet travels with the captain");
+        respawnView.Traffic.Load(Vector2I.Zero, respawnView.PlayerPosition);
+        Check(respawnView.Traffic.Vessels.Count(v => v.PlayerOwned) == 1, "Revisiting cells never duplicates owned ships");
+        respawnView.QueueFree();
+    }
+    private void DeathRespawnPhysics()
+    {
+        var view = new UniverseView(); var ship = new ModularShip(); ship.SeedReferenceShip();
+        view.SetShip(ship); AddChild(view); view.SetPhysicsProcess(false);
+        view.Progress.Resources = 0;
+        view.Progress.Collect(UniverseView.RespawnCost);
+        ship.DamageBlock(ship.Core!, 10000);
+        Check(ship.Core is null && !ship.HasLiveCore, "Core is destroyed before respawn");
+        // Physics tick after death must not crash (no NaN propagation, no missing actor refs).
+        view._PhysicsProcess(1.0 / 60);
+        Check(float.IsFinite(view.PlayerPosition.X) && float.IsFinite(view.PlayerPosition.Y),
+            "Death does not destabilize physics: position stays finite");
+        // Enter after death triggers respawn via the campaign input path.
+        view._Input(new InputEventKey { Keycode = Key.Enter, Pressed = true });
+        Check(ship.HasLiveCore, "Enter after core loss respawns the captain at a friendly station");
+        Check(view.Progress.Resources == 0, "Respawn debits the 100 R fee through the input path");
+        view.QueueFree();
+    }
+    private void RepairAndRegrow()
+    {
+        var ship = new ModularShip(); ship.SeedReferenceShip();
+        var fullHealth = ship.Blocks.Sum(b => b.Health);
+        var blockCount = ship.Blocks.Count;
+        // Damage but do not destroy: TickRepair heals over time and costs resources.
+        ship.Blocks[3].Health = 1;
+        var damaged = ship.Blocks[3];
+        var cost = ship.TickRepair(1f, 1000);
+        Check(damaged.Health > 1 && cost > 0, "Damaged blocks heal toward full at a resource cost");
+        // No resources: healing stops and no blocks regrow.
+        ship.Blocks[3].Health = 1;
+        var noCost = ship.TickRepair(1f, 0);
+        Check(noCost == 0, "Without resources, repair halts");
+        // Destroy a non-core block: it regrows from a live neighbor when resources allow.
+        var target = ship.Blocks.First(b => !b.Spec.IsCore && b.Health > 0);
+        var targetShape = target.ShapeId; var targetPos = target.Position; var targetAngle = target.Angle;
+        ship.DamageBlock(target, 100000);
+        Check(!ship.Blocks.Any(b => b.ShapeId == targetShape && b.Position == targetPos), "Block is destroyed and absent from Blocks");
+        var regrowCost = ship.TickRepair(1f, 10000);
+        Check(regrowCost > 0 && ship.Blocks.Any(b => b.ShapeId == targetShape && b.Position == targetPos && b.Health > 0),
+            "Destroyed blocks regrow from a live neighbor when resources are available");
+        // A block with no live neighbor cannot regrow (isolated blueprint slot).
+        foreach (var b in ship.Blocks.ToList()) ship.DamageBlock(b, 100000);
+        Check(ship.Blocks.Count == 0, "All blocks destroyed for isolation test");
+        var isoCost = ship.TickRepair(1f, 10000);
+        Check(isoCost == 0, "Isolated blueprint slots never regrow without a live neighbor");
     }
 }
