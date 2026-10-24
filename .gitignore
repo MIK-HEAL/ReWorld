@@ -11,3 +11,7 @@ tools/
 
 docs/
 .workbuddy/
+
+# Reassembly 逆向成果（需要提交到 git，不能忽略）
+!Reassembly/
+!Reassembly/**
