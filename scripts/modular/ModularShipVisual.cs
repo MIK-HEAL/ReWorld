@@ -159,7 +159,8 @@ public static class ModularShipVisual
             var lineColor = spec.LineColor;
             canvas.DrawPolyline(item.Outline, lineColor, 1.0f);
 
-            if (spec.HasNativeThruster)
+            // 核心块虽带原生 THRUSTER 特征，但不渲染喷焰与烟雾（对齐 Reassembly：核心无可见动力表现）。
+            if (spec.HasNativeThruster && !spec.IsCore)
             {
                 var activity = thrusterActivity is not null && thrusterActivity.TryGetValue(block.Id, out var a) ? a : 0.0f;
                 DrawEngine(canvas, spec, center, angle, activity, item.Flame, item.FlameCore);
@@ -227,12 +228,12 @@ public static class ModularShipVisual
         var side = exhaust.Rotated(Mathf.Pi * 0.5f);
         var smoke = spec.ThrusterColor.Lerp(Colors.White, 0.75f);
         var time = Time.GetTicksMsec() * 0.001f;
-        var particleCount = 10 + Mathf.RoundToInt(Mathf.Clamp(activity, 0, 1) * 14);
-        var trailLength = spec.Radius * (1.6f + 2.4f * activity);
+        var particleCount = 18 + Mathf.RoundToInt(Mathf.Clamp(activity, 0, 1) * 22);
+        var trailLength = spec.Radius * (2.4f + 3.2f * activity);
         for (var i = 0; i < particleCount; i++)
         {
             // 每个粒子按自身相位 0→1 走完轨迹；时间偏移错开形成连续烟带。
-            var phase = Mathf.PosMod(time * (0.55f + activity * 0.9f) + i * 0.618f + spec.NumId * 0.037f, 1.0f);
+            var phase = Mathf.PosMod(time * (0.45f + activity * 0.7f) + i * 0.381f + spec.NumId * 0.037f, 1.0f);
             var wobble = Mathf.Sin(time * 3.1f + i * 2.17f + spec.NumId) * width * (0.25f + phase * 0.9f);
             var point = center + nozzle.Rotated(angle) + exhaust * (trailLength * phase) + side * wobble;
             // 烟雾随存续膨胀、淡出，但前半段保持较高不透明度以保证可见。
