@@ -16,15 +16,18 @@ using System.Linq;
 /// </summary>
 public static class ShipShapeLibrary
 {
-    /// <summary>一个端口：位于形状边缘的连接点。</summary>
+    /// <summary>
+    /// 一个端口：位于形状边缘的连接点（对齐逆向 PortSpec：Offset + Direction）。
+    /// 对正多边形，端口放在边的中点，法线即边的外法线（径向）。
+    /// </summary>
     public readonly record struct Port(float AngleDeg, float Distance)
     {
-        /// <summary>端口在形状局部坐标（未旋转）下的位置。</summary>
+        /// <summary>端口在形状局部坐标（未旋转）下的位置（边中点）。</summary>
         public Vector2 LocalPosition => new(
             Mathf.Cos(Mathf.DegToRad(AngleDeg)) * Distance,
             Mathf.Sin(Mathf.DegToRad(AngleDeg)) * Distance);
 
-        /// <summary>端口朝向（单位法线，从形状中心指向外）。</summary>
+        /// <summary>端口朝向（单位外法线，正多边形边中点处等于径向）。</summary>
         public Vector2 Normal => LocalPosition.Normalized();
     }
 
@@ -112,12 +115,13 @@ public static class ShipShapeLibrary
                 Sides = 4, Radius = 24.0f, Mass = 10.0f, Hull = 70.0f,
                 Ports = PortsForSides(4, 24.0f),
             },
-            // 推进器：三角（尖端指向推力反方向），后端端口连舰体。
+            // 推进器：四边形（对齐 Reassembly 常见外观，不使用三角以避免吸附与朝向歧义）。
+            // 推力沿 +X（本地），喷口朝 -X；端口在四条边中点，可任意边吸附。
             ["thruster"] = new()
             {
                 Id = "thruster", Label = "推进器", Category = "机动", ColorHex = "#cf7bff",
-                Sides = 3, Radius = 22.0f, Mass = 5.0f, Hull = 25.0f, Thrust = 40.0f,
-                Ports = PortsForSides(3, 22.0f),
+                Sides = 4, Radius = 22.0f, Mass = 5.0f, Hull = 25.0f, Thrust = 40.0f,
+                Ports = PortsForSides(4, 22.0f),
                 ThrustDirection = Vector2.Left,
             },
             // 姿态陀螺：小六边形。
@@ -210,12 +214,12 @@ public static class ShipShapeLibrary
                 Sides = 6, Radius = 15.0f, Mass = 3.0f, Hull = 18.0f,
                 Ports = PortsForSides(6, 15.0f),
             },
-            // 散热翼：三角形。
+            // 散热翼：六边形（薄片结构，对齐 Reassembly 散热片外观）。
             ["radiator"] = new()
             {
                 Id = "radiator", Label = "散热翼", Category = "散热", ColorHex = "#6ec6c7",
-                Sides = 3, Radius = 24.0f, Mass = 3.0f, Hull = 18.0f,
-                Ports = PortsForSides(3, 24.0f),
+                Sides = 6, Radius = 22.0f, Mass = 3.0f, Hull = 18.0f,
+                Ports = PortsForSides(6, 22.0f),
             },
             // 货运舱：大方形。
             ["cargo"] = new()
@@ -233,15 +237,20 @@ public static class ShipShapeLibrary
             },
         };
 
-    /// <summary>为 n 边正多边形生成均匀分布在顶点方向的端口。</summary>
+    /// <summary>
+    /// 为 n 边正多边形生成端口：每个端口放在边的中点，法线为边外法线（径向）。
+    /// 对齐逆向 insertRegularPoly + PortPos：端口在边上，不在顶点上。
+    /// 端口距离 = radius * cos(π/n)（边中点到中心的距离），保证端口正好落在边上。
+    /// </summary>
     private static List<Port> PortsForSides(int sides, float radius)
     {
         var ports = new List<Port>();
-        // 端口放在每个顶点方向（即每边中点方向），让方块能沿每条边连接。
+        var halfStep = 180.0f / sides; // 边中点相对顶点偏移半个步距。
+        var distance = radius * Mathf.Cos(Mathf.DegToRad(halfStep));
         for (var i = 0; i < sides; i++)
         {
-            var angleDeg = (i * 360.0f / sides);
-            ports.Add(new Port(angleDeg, radius));
+            var angleDeg = i * 360.0f / sides + halfStep; // 边中点方向。
+            ports.Add(new Port(angleDeg, distance));
         }
         return ports;
     }

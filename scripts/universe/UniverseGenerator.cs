@@ -103,7 +103,7 @@ public static class UniverseGenerator
                     Radius = 160.0f + (float)rng.NextDouble() * 120.0f,
                     ColorHex = StarColor(rng),
                     GravityRadius = 2600.0f,
-                    GravityStrength = 90000000.0f,  // G·M：距表面500时 a≈360（超过推力，无法逃逸）
+                    GravityStrength = 30000000.0f,  // G·M：距表面500时 a≈120（推力23%，明显拉扯但可控）
                 });
             }
             else if (roll < 0.55)
@@ -118,7 +118,7 @@ public static class UniverseGenerator
                     ColorHex = BiomeColor(biome),
                     Biome = biome,
                     GravityRadius = 1500.0f,
-                    GravityStrength = 26000000.0f,  // G·M：距表面500时 a≈104（推力520的20%，明显拉扯感）
+                    GravityStrength = 8000000.0f,  // G·M：距表面300时 a≈89（推力17%），拉扯但可控
                 });
             }
             else if (roll < 0.80)
@@ -131,7 +131,7 @@ public static class UniverseGenerator
                     Radius = 30.0f + (float)rng.NextDouble() * 22.0f,
                     ColorHex = "#7bb7e8",
                     GravityRadius = 550.0f,
-                    GravityStrength = 1600000.0f,  // G·M：距表面200时 a≈40（推力520的8%，轻微拉扯）
+                    GravityStrength = 600000.0f,  // G·M：距表面200时 a≈15（推力3%，轻微引导）
                 });
             }
             else

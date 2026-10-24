@@ -32,11 +32,22 @@ public partial class ShipBuilder : Node2D
     private ModularShip.Block? _draggingBlock;
     private Vector2 _dragGrabOffset;
 
+    /// <summary>对称建造模式（Reassembly 标志性功能，按 X 切换）：沿过核心的纵轴镜像放置/删除。默认关闭，按需开启。</summary>
+    private bool _mirrorMode = false;
+
     private (Vector2 Position, float Angle, bool Valid)? _snapPreview;
     private Font _font = null!;
 
     public ModularShip Ship => _ship;
     public string SelectedShapeId => _selectedShapeId;
+
+    /// <summary>把镜头居中到舰体（进入建造页时调用）。</summary>
+    public void FocusShip()
+    {
+        if (_ship.Blocks.Count > 0)
+            _cameraPosition = _ship.CenterOfMass();
+        QueueRedraw();
+    }
 
     public override void _Ready()
     {
@@ -70,6 +81,8 @@ public partial class ShipBuilder : Node2D
             return (worldPos, angle, true);
 
         // 找最近的、且未被占用的目标端口，距离在吸附阈值内才吸附。
+        // 对齐逆向 connectPorts：尝试「选中方块的每个端口」对「目标方块的每个空闲端口」所有组合，
+        // 取使光标距离最近的一组（玩家不必关心用哪个端口接，算法自动选最佳对接）。
         (Vector2 Position, float Angle, bool Valid)? best = null;
         var bestDist = 80.0f; // 吸附阈值（世界单位）。
 
@@ -82,20 +95,78 @@ public partial class ShipBuilder : Node2D
                 if (IsPortOccupied(target, targetPort))
                     continue;
 
-                var (snapPos, snapAngle) = ModularShip.SnapBlock(
-                    spec.Ports[0], targetPort, target.Position, target.Angle);
-
-                // 计算吸附后方块中心的距离（越近越好）。
-                var centerDist = snapPos.DistanceTo(worldPos);
-                if (centerDist < bestDist)
+                foreach (var selfPort in spec.Ports)
                 {
-                    bestDist = centerDist;
-                    best = (snapPos, snapAngle, true);
+                    var (snapPos, snapAngle) = ModularShip.SnapBlock(
+                        selfPort, targetPort, target.Position, target.Angle);
+
+                    // 计算吸附后方块中心的距离（越近越好）。
+                    var centerDist = snapPos.DistanceTo(worldPos);
+                    if (centerDist < bestDist)
+                    {
+                        bestDist = centerDist;
+                        best = (snapPos, snapAngle, true);
+                    }
                 }
             }
         }
 
         return best;
+    }
+
+    /// <summary>
+    /// 拖拽松手时，把方块平移吸附到最近的空闲端口（保持方块自身角度不变）。
+    /// 在所有「本方块端口 ↔ 目标空闲端口」组合里找距离最近且在阈值内的一对。
+    /// </summary>
+    private void SnapDraggedBlock(ModularShip.Block block)
+    {
+        const float snapThreshold = 48.0f;
+        Vector2? bestPos = null;
+        var bestDist = snapThreshold;
+
+        foreach (var target in _ship.Blocks.Where(other => other.Id != block.Id && other.Enabled))
+        {
+            foreach (var targetPort in target.Spec.Ports)
+            {
+                if (IsPortOccupied(target, targetPort))
+                    continue;
+                var targetPortWorld = target.Position + targetPort.LocalPosition.Rotated(target.Angle);
+                foreach (var ownPort in block.Spec.Ports)
+                {
+                    // 平移方块，使 ownPort 与目标端口重合（角度保持拖拽时的朝向）。
+                    var candidate = targetPortWorld - ownPort.LocalPosition.Rotated(block.Angle);
+                    var dist = candidate.DistanceTo(block.Position);
+                    if (dist < bestDist)
+                    {
+                        bestDist = dist;
+                        bestPos = candidate;
+                    }
+                }
+            }
+        }
+
+        if (bestPos.HasValue)
+            block.Position = bestPos.Value;
+    }
+
+    /// <summary>位置关于过 axisPoint 的纵轴（竖直直线）的镜像。</summary>
+    private static Vector2 MirrorAcrossAxis(Vector2 pos, Vector2 axisPoint) => new(2.0f * axisPoint.X - pos.X, pos.Y);
+
+    /// <summary>角度关于纵轴的镜像（向量角 θ → π − θ）。</summary>
+    private static float MirrorAngleAcrossAxis(float angle) => Mathf.Pi - angle;
+
+    /// <summary>对称轴渲染：过核心的竖直虚线（对称模式开启时）。</summary>
+    private void DrawMirrorAxis()
+    {
+        if (!_mirrorMode || _ship.Core is not { } core)
+            return;
+        var halfView = new Vector2(ViewWidth, ViewHeight) * 0.5f / _cameraZoom;
+        var top = _cameraPosition.Y - halfView.Y;
+        var bottom = _cameraPosition.Y + halfView.Y;
+        var color = new Color("#7bb7e8", 0.35f);
+        var dash = 10.0f / _cameraZoom;
+        for (var y = top; y < bottom; y += dash * 2.0f)
+            DrawLine(new Vector2(core.Position.X, y), new Vector2(core.Position.X, Mathf.Min(y + dash, bottom)), color, 1.2f / _cameraZoom);
     }
 
     /// <summary>目标方块的目标端口是否已被其他方块占用。</summary>
@@ -136,9 +207,10 @@ public partial class ShipBuilder : Node2D
 
             if (!mouse.Pressed)
             {
-                // 松开左键：结束拖拽。
+                // 松开左键：结束拖拽，并把方块吸附到最近的空闲端口（对齐 Reassembly 的拖拽吸附）。
                 if (mouse.ButtonIndex == MouseButton.Left && _draggingBlock is not null)
                 {
+                    SnapDraggedBlock(_draggingBlock);
                     _draggingBlock = null;
                     _dragGrabOffset = Vector2.Zero;
                 }
@@ -156,10 +228,19 @@ public partial class ShipBuilder : Node2D
                     return;
                 }
 
-                // 放置新方块。
+                // 放置新方块（对称模式下同时镜像放置）。
                 if (_snapPreview is { Valid: true } snap)
                 {
                     _ship.AddBlock(_selectedShapeId, snap.Position, snap.Angle);
+                    if (_mirrorMode && _ship.Core is { } core)
+                    {
+                        var mirrorPos = MirrorAcrossAxis(snap.Position, core.Position);
+                        var mirrorAngle = MirrorAngleAcrossAxis(snap.Angle);
+                        // 镜像点重新计算吸附，保证端口对齐。
+                        var mirrorSnap = ComputeSnap(_selectedShapeId, mirrorAngle, mirrorPos);
+                        if (mirrorSnap is { Valid: true } ms && ms.Position.DistanceTo(snap.Position) > 1.0f)
+                            _ship.AddBlock(_selectedShapeId, ms.Position, ms.Angle);
+                    }
                 }
                 return;
             }
@@ -168,7 +249,20 @@ public partial class ShipBuilder : Node2D
             {
                 var clicked = BlockAt(ScreenToWorld(mouse.Position));
                 if (clicked is not null)
+                {
                     _ship.RemoveBlock(clicked);
+                    // 对称模式：同时删除镜像位置的同形方块。
+                    if (_mirrorMode && _ship.Core is { } core && clicked.ShapeId != "core")
+                    {
+                        var mirrorPos = MirrorAcrossAxis(clicked.Position, core.Position);
+                        var mirrored = _ship.Blocks
+                            .Where(b => b.Enabled && b.ShapeId == clicked.ShapeId && b.Id != clicked.Id)
+                            .OrderBy(b => b.Position.DistanceTo(mirrorPos))
+                            .FirstOrDefault();
+                        if (mirrored is not null && mirrored.Position.DistanceTo(mirrorPos) <= mirrored.Spec.Radius)
+                            _ship.RemoveBlock(mirrored);
+                    }
+                }
                 return;
             }
         }
@@ -203,6 +297,10 @@ public partial class ShipBuilder : Node2D
             {
                 _cameraPosition = _ship.CenterOfMass();
                 _cameraZoom = 1.0f;
+            }
+            else if (key.Keycode == Key.X)
+            {
+                _mirrorMode = !_mirrorMode;
             }
             else if (TryGetShapeShortcut(key.Keycode, out var index) && index < ShipShapeLibrary.BuildOrder.Length)
             {
@@ -267,6 +365,7 @@ public partial class ShipBuilder : Node2D
 
         DrawSetTransform(new Vector2(ViewWidth, ViewHeight) * 0.5f - _cameraPosition * _cameraZoom, 0.0f, new Vector2(_cameraZoom, _cameraZoom));
         DrawGridBackdrop();
+        DrawMirrorAxis();
         DrawShip();
         DrawSnapPreview();
         DrawSetTransform(Vector2.Zero, 0.0f, Vector2.One);
@@ -379,6 +478,28 @@ public partial class ShipBuilder : Node2D
         }
 
         DrawPreviewAt(snap.Position, snap.Angle, snap.Valid);
+
+        // 对称模式：画镜像位置的幻影预览（对齐 Reassembly 的对称建造反馈）。
+        if (_mirrorMode && snap.Valid && _ship.Core is { } core)
+        {
+            var mirrorPos = MirrorAcrossAxis(snap.Position, core.Position);
+            if (mirrorPos.DistanceTo(snap.Position) > 1.0f)
+            {
+                var mirrorSnap = ComputeSnap(_selectedShapeId, MirrorAngleAcrossAxis(snap.Angle), mirrorPos);
+                if (mirrorSnap is { Valid: true } ms)
+                    DrawGhostPreviewAt(ms.Position, ms.Angle);
+            }
+        }
+    }
+
+    private void DrawGhostPreviewAt(Vector2 position, float angle)
+    {
+        if (!ShipShapeLibrary.Shapes.TryGetValue(_selectedShapeId, out var spec))
+            return;
+        var vertices = spec.Vertices()
+            .Select(v => position + v.Rotated(angle))
+            .ToArray();
+        DrawPolyline(vertices.Append(vertices[0]).ToArray(), new Color("#7bb7e8", 0.55f), 1.2f);
     }
 
     private void DrawPreviewAt(Vector2 position, float angle, bool valid)
@@ -400,44 +521,70 @@ public partial class ShipBuilder : Node2D
 
     private void DrawPalette()
     {
-        DrawRect(new Rect2(new Vector2(8, 8), new Vector2(300, ViewHeight - 120)), new Color("#0b151f", 0.92f));
+        DrawRect(new Rect2(new Vector2(8, 8), new Vector2(300, ViewHeight - 16)), new Color("#0b151f", 0.92f));
+        DrawRect(new Rect2(new Vector2(8, 8), new Vector2(300, ViewHeight - 16)), new Color("#2d5263"), false, 1.0f);
         DrawString(_font, new Vector2(20, 32), "方块库", HorizontalAlignment.Left, -1, 16, new Color("#f4f1de"));
 
-        var columns = 2;
+        // 按类别分组（对齐 Reassembly 的分类方块面板）。
+        var y = 46.0f;
         var index = 0;
-        foreach (var shapeId in ShipShapeLibrary.BuildOrder)
+        foreach (var group in ShipShapeLibrary.BuildOrder.GroupBy(id => ShipShapeLibrary.Get(id).Category))
         {
-            var spec = ShipShapeLibrary.Get(shapeId);
-            var col = index % columns;
-            var row = index / columns;
-            var x = 20 + col * 140;
-            var py = 52 + row * 46;
+            DrawString(_font, new Vector2(20, y + 13), group.Key, HorizontalAlignment.Left, -1, 12, new Color("#56707f"));
+            y += 20.0f;
 
-            var selected = shapeId == _selectedShapeId;
-            var bg = selected ? new Color("#1d3a52") : new Color("#122334");
-            DrawRect(new Rect2(new Vector2(x, py), new Vector2(130, 40)), bg);
-            DrawRect(new Rect2(new Vector2(x, py), new Vector2(130, 40)), selected ? new Color("#65c18c") : new Color("#2d5263"), false, 1.0f);
+            var col = 0;
+            foreach (var shapeId in group)
+            {
+                var spec = ShipShapeLibrary.Get(shapeId);
+                var x = 20 + col * 140;
+                var selected = shapeId == _selectedShapeId;
+                var bg = selected ? new Color("#1d3a52") : new Color("#122334");
+                DrawRect(new Rect2(new Vector2(x, y), new Vector2(132, 32)), bg);
+                DrawRect(new Rect2(new Vector2(x, y), new Vector2(132, 32)), selected ? new Color("#65c18c") : new Color("#2d5263"), false, 1.0f);
 
-            // 小形状预览。
-            var preview = spec.Vertices().Select(v => new Vector2(x + 26, py + 20) + v * 0.45f).ToArray();
-            DrawColoredPolygon(preview, new Color(spec.ColorHex));
-            DrawPolyline(preview.Append(preview[0]).ToArray(), new Color("#f0f4f0", 0.6f), 1.0f);
+                // 小形状预览。
+                var preview = spec.Vertices().Select(v => new Vector2(x + 16, y + 16) + v * 0.4f).ToArray();
+                DrawColoredPolygon(preview, new Color(spec.ColorHex));
+                DrawPolyline(preview.Append(preview[0]).ToArray(), new Color("#f0f4f0", 0.6f), 1.0f);
 
-            var shortcut = GetShortcutLabel(index);
-            DrawString(_font, new Vector2(x + 40, py + 24), $"{shortcut} {spec.Label}", HorizontalAlignment.Left, -1, 12,
-                selected ? new Color("#f4f1de") : new Color("#9fb3c2"));
-            index++;
+                var shortcut = index < 12 ? GetShortcutLabel(index) + " " : "";
+                DrawString(_font, new Vector2(x + 32, y + 20), $"{shortcut}{spec.Label}", HorizontalAlignment.Left, -1, 11,
+                    selected ? new Color("#f4f1de") : new Color("#9fb3c2"));
+
+                col++;
+                index++;
+                if (col == 2)
+                {
+                    col = 0;
+                    y += 36.0f;
+                }
+            }
+            if (col != 0)
+                y += 36.0f;
         }
 
-        DrawString(_font, new Vector2(20, ViewHeight - 96), $"质量 {_ship.TotalMass:0}  方块 {_ship.Blocks.Count}", HorizontalAlignment.Left, -1, 13, new Color("#7f93a8"));
+        // 舰体统计 + 当前方块属性（面板底部）。
+        var statsY = ViewHeight - 76.0f;
+        DrawLine(new Vector2(16, statsY - 8), new Vector2(300, statsY - 8), new Color("#2d5263"), 1.0f);
+        DrawString(_font, new Vector2(20, statsY + 8),
+            $"方块 {_ship.Blocks.Count}  质量 {_ship.TotalMass:0}  推力 {_ship.TotalThrust:0}  火力 {_ship.TotalDamage:0}",
+            HorizontalAlignment.Left, -1, 12, new Color("#7f93a8"));
+        var sel = ShipShapeLibrary.Get(_selectedShapeId);
+        DrawString(_font, new Vector2(20, statsY + 28),
+            $"{sel.Label}：质量 {sel.Mass:0} 耐久 {sel.Hull:0}" +
+            (sel.IsThruster ? $" 推力 {sel.Thrust:0}" : "") +
+            (sel.IsWeapon ? $" 伤害 {sel.Damage:0}" : ""),
+            HorizontalAlignment.Left, -1, 11, new Color("#56707f"));
+        DrawString(_font, new Vector2(20, statsY + 48), "Esc/M 返回宇宙 · 飞行键 W A S D", HorizontalAlignment.Left, -1, 11, new Color("#3f5566"));
     }
 
     private void DrawHud()
     {
-        DrawString(_font, new Vector2(320, 20), $"当前：{ShipShapeLibrary.Get(_selectedShapeId).Label}  朝向 {Mathf.RadToDeg(_previewAngle):0}°",
+        DrawString(_font, new Vector2(320, 20), $"当前：{ShipShapeLibrary.Get(_selectedShapeId).Label}  朝向 {Mathf.RadToDeg(_previewAngle):0}°  对称 {(_mirrorMode ? "开" : "关")}",
             HorizontalAlignment.Left, -1, 14, new Color("#b7c7d4"));
         DrawString(_font, new Vector2(320, 44),
-            "左键放置 · 右键删除 · 拖动移动 · R/Q 旋转(45°) · ←/→ 微调 · 滚轮缩放 · 中键平移 · F 居中",
+            "左键放置 · 右键删除 · 拖动移动 · R/Q 旋转(45°) · ←/→ 微调 · X 对称 · 滚轮缩放 · 中键平移 · F 居中",
             HorizontalAlignment.Left, -1, 13, new Color("#6e8d9c"));
         DrawString(_font, new Vector2(320, 66), "端口自动吸附：靠近任意空闲端口，方块即对齐法线连接（任意角度多边形舰体）。",
             HorizontalAlignment.Left, -1, 12, new Color("#56707f"));

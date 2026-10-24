@@ -92,9 +92,12 @@ public partial class Main : Node2D
         // 试航也使用同一模块化舰体（运行时局部命中 + 断裂）。
         _spaceTest.SetShip(_shipBuilder.Ship);
 
-        // 启动进入宇宙：隐藏原有建造 UI。
-        _builderUi.Visible = false;
-        _spaceHud.Visible = false;
+        // 启动进入宇宙：隐藏并禁用其他页面（杜绝隐藏页面继续处理输入/飞行）。
+        SetPage(_spaceTest, false);
+        SetPage(_shipBuilder, false);
+        SetPage(_builderUi, false);
+        SetPage(_spaceHud, false);
+        SetPage(_universe, true);
 
         SetProcess(true);
         QueueRedraw();

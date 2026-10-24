@@ -338,19 +338,36 @@ public sealed class ModularShip
         return totalMass > 0.0f ? weighted / totalMass : Vector2.Zero;
     }
 
-    /// <summary>重置为默认参考舰（一个核心 + 若干模块，与现有 SeedDemoLayout 一致的简化版）。</summary>
+    /// <summary>重置为默认参考舰：用端口吸附链生成，保证所有连接端口严格对齐。</summary>
     public void SeedReferenceShip()
     {
         _blocks.Clear();
         _nextId = 1;
         var core = AddBlock("core", Vector2.Zero, 0.0f);
-        AddBlock("hull", new Vector2(0.0f, -46.0f), 0.0f);
-        AddBlock("hull", new Vector2(0.0f, 46.0f), 0.0f);
-        AddBlock("hull", new Vector2(46.0f, 0.0f), 0.0f);
-        AddBlock("thruster", new Vector2(-66.0f, -40.0f), Mathf.Pi);
-        AddBlock("thruster", new Vector2(-66.0f, 40.0f), Mathf.Pi);
-        AddBlock("laser", new Vector2(88.0f, 0.0f), Mathf.Pi * 0.5f);
-        AddBlock("reactor", new Vector2(88.0f, 40.0f), 0.0f);
+        // 主体：核心四个方向接装甲骨架。
+        var hullUp = AttachTo(core, 4, "hull", 1);     // 核心上端口(270°) ↔ hull 左下端口(135°)
+        var hullDown = AttachTo(core, 1, "hull", 1);   // 核心下端口(90°)
+        var hullRight = AttachTo(core, 5, "hull", 1);  // 核心右上端口(330°)
+        // 推进器：核心左下/左上端口接推进器左下端口。
+        AttachTo(core, 2, "thruster", 1);
+        AttachTo(core, 3, "thruster", 1);
+        // 武器与能源：接在右侧装甲骨架的远端端口上。
+        AttachTo(hullRight, 0, "laser", 2);
+        AttachTo(hullDown, 0, "reactor", 2);
         Changed?.Invoke();
+    }
+
+    /// <summary>
+    /// 把一个新方块吸附到 host 方块的指定端口上：
+    /// 选中方块用 selfPortIndex 端口，对接 host 的 hostPortIndex 端口，
+    /// 用 SnapBlock 计算位置与朝向（两端口重合 + 法线反向 = 边贴合）。
+    /// </summary>
+    private Block AttachTo(Block host, int hostPortIndex, string shapeId, int selfPortIndex)
+    {
+        var selfSpec = ShipShapeLibrary.Get(shapeId);
+        var hostPort = host.Spec.Ports[hostPortIndex % host.Spec.Ports.Count];
+        var selfPort = selfSpec.Ports[selfPortIndex % selfSpec.Ports.Count];
+        var (pos, ang) = SnapBlock(selfPort, hostPort, host.Position, host.Angle);
+        return AddBlock(shapeId, pos, ang);
     }
 }
