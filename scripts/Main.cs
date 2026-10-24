@@ -26,6 +26,7 @@ public partial class Main : Node2D
     private ShipBuilder _shipBuilder = null!;
     private UniverseView _universe = null!;
     private string _mode = "universe";
+    private Window.ModeEnum _windowedMode = Window.ModeEnum.Maximized;
     // The game opens in orbit. Factory construction is a landed-planet activity,
     // so it is entered explicitly from the space route instead of being the shell
     // around the whole game.
@@ -147,6 +148,22 @@ public partial class Main : Node2D
         }
         else
             _spaceHud?.Refresh();
+    }
+
+    private bool HandleWindowShortcut(InputEvent @event)
+    {
+        if (@event is not InputEventKey { Pressed: true, Echo: false } key) return false;
+        if (key.Keycode != Key.F11 && !(key.AltPressed && key.Keycode == Key.Enter)) return false;
+        var window = GetWindow();
+        if (window.Mode is Window.ModeEnum.Fullscreen or Window.ModeEnum.ExclusiveFullscreen)
+            window.Mode = _windowedMode;
+        else
+        {
+            _windowedMode = window.Mode;
+            window.Mode = Window.ModeEnum.Fullscreen;
+        }
+        GetViewport().SetInputAsHandled();
+        return true;
     }
 
     public override void _UnhandledInput(InputEvent @event)
@@ -402,6 +419,7 @@ public partial class Main : Node2D
 
     public override void _Input(InputEvent @event)
     {
+        if (HandleWindowShortcut(@event)) return;
         if (_mode != "builder" || @event is not InputEventMouseButton mouse || mouse.Pressed) return;
         if (mouse.ButtonIndex == MouseButton.Middle) _cameraDragging = false;
         if (mouse.ButtonIndex == MouseButton.Left && (!GridRect.HasPoint(mouse.Position) || _builderUi.IsPointerOverOverlay(mouse.Position)))

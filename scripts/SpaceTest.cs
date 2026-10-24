@@ -609,6 +609,36 @@ public partial class SpaceTest : Node2D
 
     private void ApplyShipMotion(PlayerMetrics metrics, float powerScale, float delta)
     {
+        if (_playerShip is not null)
+        {
+            var result = ShipPropulsion.Evaluate(_playerShip, ShipPropulsion.ReadTranslation(),
+                ShipPropulsion.ReadYaw(), _playerThrusterActivity);
+            _thrusterProfile = BuildThrusterProfile();
+            foreach (var mount in _thrusterProfile)
+                mount.Activation = _playerThrusterActivity.GetValueOrDefault(mount.BlockId);
+            _forwardThrust = result.Forward;
+            _reverseThrust = result.Reverse;
+            _leftTurnThrust = result.Left;
+            _rightTurnThrust = result.Right;
+            _turnCapacity = result.TorqueCapacity;
+            _activeThrusters = result.ActiveCount;
+            var force = result.LocalForce.Rotated(_playerHeading) * powerScale;
+            _appliedForceDirection = force.Normalized();
+            _appliedForceRatio = Mathf.Clamp(force.Length() / Mathf.Max(1, _playerShip.TotalThrust * ShipPropulsion.ForceScale), 0, 1);
+            _playerVelocity += force / Mathf.Max(1, _playerShip.TotalMass) * delta;
+            _playerAngularVelocity += result.Torque * powerScale / _playerShip.MomentOfInertia() * delta;
+            _playerAngularVelocity *= Mathf.Exp(-2.5f * delta);
+            _playerAngularVelocity = Mathf.Clamp(_playerAngularVelocity, -4.2f, 4.2f);
+            _playerVelocity = _playerVelocity.MoveToward(Vector2.Zero, 7 * delta).LimitLength(900);
+            _playerHeading = Mathf.Wrap(_playerHeading + _playerAngularVelocity * delta, -Mathf.Pi, Mathf.Pi);
+            _playerPosition += _playerVelocity * delta;
+            var clamped = _playerPosition.Clamp(new Vector2(150, 140), new Vector2(WorldWidth - 150, WorldHeight - 140));
+            if (clamped.X != _playerPosition.X) _playerVelocity.X *= -0.25f;
+            if (clamped.Y != _playerPosition.Y) _playerVelocity.Y *= -0.25f;
+            _playerPosition = clamped;
+            return;
+        }
+
         var throttleInput = 0.0f;
         if (Input.IsKeyPressed(Key.W) || Input.IsKeyPressed(Key.Up))
             throttleInput += 1.0f;

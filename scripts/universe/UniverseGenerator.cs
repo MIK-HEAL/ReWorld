@@ -13,6 +13,9 @@ public static class UniverseGenerator
     /// <summary>扇区边长（世界单位，像素）。</summary>
     // 逆向 regions.lua 的 sectorSize=6000。更大的流式扇区也让星球分布更稀疏。
     public const float SectorSize = 6000.0f;
+    public const float PlanetRadiusMin = 640.0f;
+    public const float PlanetRadiusMax = 1100.0f;
+    public const float StarRadiusMax = 1900.0f;
     /// <summary>当前阶段不生成敌人派系/敌对舰队。</summary>
     public static bool GenerateEnemyFactions { get; } = false;
 
@@ -47,6 +50,8 @@ public static class UniverseGenerator
     /// <summary>一个天体（星球 / 空间站 / 小行星带）。</summary>
     public sealed class CelestialBody
     {
+        /// <summary>稳定的天体标识；后续轨道交互与地表存档共用。</summary>
+        public required string Id { get; init; }
         public required Vector2 Position { get; init; }
         public required CelestialKind Kind { get; init; }
         public required string Name { get; init; }
@@ -54,6 +59,9 @@ public static class UniverseGenerator
         public required string ColorHex { get; init; }
         /// <summary>星球可降落的资源/环境特征（决定工厂能采什么）。</summary>
         public string Biome { get; init; } = "iron";
+        public bool HasSurface => Kind is CelestialKind.Planet or CelestialKind.Star;
+        public float ApproachRadius => Radius + Mathf.Max(240, Radius * 0.3f);
+        public float SurfaceDistance(Vector2 position) => Mathf.Max(0, Position.DistanceTo(position) - Radius);
 
         /// <summary>
         /// 引力井半径（超出此范围不再产生引力）。仿 Reassembly 的 Gravity Well。
@@ -87,6 +95,7 @@ public static class UniverseGenerator
 
         // 扇区内天体数量：1~2 个。配合 6000 扇区边长，降低星球拥挤度。
         var count = 1 + rng.Next(2);
+        var omitBody = false;
         for (var i = 0; i < count; i++)
         {
             var offset = new Vector2(
@@ -96,42 +105,54 @@ public static class UniverseGenerator
 
             // 按种子决定天体类型。
             var roll = rng.NextDouble();
+            // 开局锚点：一颗可回访的母星，不额外增加扇区天体数量。
+            if (sector == Vector2I.Zero && i == 0) roll = 0.2;
+            var id = $"{sector.X}:{sector.Y}:{i}";
             if (roll < 0.06)
             {
+                var radius = 1400.0f + (float)rng.NextDouble() * (StarRadiusMax - 1400.0f);
+                position = PlaceBody(position, radius);
                 bodies.Add(new CelestialBody
                 {
+                    Id = id,
                     Position = position,
                     Kind = CelestialKind.Star,
                     Name = $"恒星 {sector.X},{sector.Y}-{i}",
-                    Radius = 160.0f + (float)rng.NextDouble() * 120.0f,
+                    Radius = radius,
                     ColorHex = StarColor(rng),
-                    GravityRadius = 2600.0f,
-                    GravityStrength = 30000000.0f,  // G·M：距表面500时 a≈120（推力23%，明显拉扯但可控）
+                    GravityRadius = radius * 2.6f,
+                    GravityStrength = radius * radius * 120.0f,
                 });
             }
             else if (roll < 0.42)
             {
                 var biome = Biome(rng);
+                var radius = PlanetRadiusMin + (float)rng.NextDouble() * (PlanetRadiusMax - PlanetRadiusMin);
+                position = PlaceBody(position, radius);
                 bodies.Add(new CelestialBody
                 {
+                    Id = id,
                     Position = position,
                     Kind = CelestialKind.Planet,
                     Name = PlanetName(rng, sector, i),
-                    Radius = 46.0f + (float)rng.NextDouble() * 70.0f,
+                    Radius = radius,
                     ColorHex = BiomeColor(biome),
                     Biome = biome,
-                    GravityRadius = 1500.0f,
-                    GravityStrength = 8000000.0f,  // G·M：距表面300时 a≈89（推力17%），拉扯但可控
+                    GravityRadius = radius * 3.0f,
+                    GravityStrength = radius * radius * 100.0f,
                 });
             }
             else if (roll < 0.80)
             {
+                var radius = 30.0f + (float)rng.NextDouble() * 22.0f;
+                position = PlaceBody(position, radius);
                 bodies.Add(new CelestialBody
                 {
+                    Id = id,
                     Position = position,
                     Kind = CelestialKind.Station,
                     Name = StationName(rng),
-                    Radius = 30.0f + (float)rng.NextDouble() * 22.0f,
+                    Radius = radius,
                     ColorHex = "#7bb7e8",
                     GravityRadius = 550.0f,
                     GravityStrength = 600000.0f,  // G·M：距表面200时 a≈15（推力3%，轻微引导）
@@ -139,18 +160,43 @@ public static class UniverseGenerator
             }
             else
             {
+                var radius = 90.0f + (float)rng.NextDouble() * 160.0f;
+                position = PlaceBody(position, radius);
                 bodies.Add(new CelestialBody
                 {
+                    Id = id,
                     Position = position,
                     Kind = CelestialKind.AsteroidField,
                     Name = $"小行星带 {sector.X},{sector.Y}-{i}",
-                    Radius = 90.0f + (float)rng.NextDouble() * 160.0f,
+                    Radius = radius,
                     ColorHex = "#8c9aaa",
                 });
             }
+            if (omitBody) bodies.RemoveAt(bodies.Count - 1);
         }
 
         return bodies;
+
+        Vector2 PlaceBody(Vector2 preferred, float radius)
+        {
+            // 连邻接扇区也预留空间；不能只放大贴图，让星球互相穿插。
+            var limit = half - radius - 240;
+            Vector2 ClampToSector(Vector2 p) => center + (p - center).Clamp(Vector2.One * -limit, Vector2.One * limit);
+            bool Free(Vector2 p) => bodies.TrueForAll(b => p.DistanceTo(b.Position) >= radius + b.Radius + 360);
+            var candidate = ClampToSector(preferred);
+            if (Free(candidate)) return candidate;
+            // 每扇区至多两个天体；选离已有天体最远的内部角点，确定性且无重试。
+            var bestDistance = -1f;
+            foreach (var direction in new[] { new Vector2(-1, -1), new Vector2(1, -1), new Vector2(-1, 1), Vector2.One })
+            {
+                var corner = center + direction * limit;
+                var distance = bodies[0].Position.DistanceTo(corner);
+                if (distance > bestDistance) { bestDistance = distance; candidate = corner; }
+            }
+            // 极端情况下两颗大恒星无法同时放进扇区，保留原天体、舍弃第二颗。
+            if (!Free(candidate)) omitBody = true;
+            return candidate;
+        }
     }
 
     /// <summary>获取玩家附近所有扇区的天体（用于相机可视范围与小地图）。</summary>

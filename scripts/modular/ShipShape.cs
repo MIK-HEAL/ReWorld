@@ -11,7 +11,7 @@ using System.Linq;
 // 本文件把逆向的纯数据结构落地为可运行代码，供建造编辑器与运行时渲染共用。
 // =============================================================================
 
-/// <summary>方块特征标志（照搬逆向 features 位标志）。</summary>
+/// <summary>ReWorld 内部能力标志；并非原版的数值 ABI。</summary>
 [Flags]
 public enum BlockFeatures
 {
@@ -20,6 +20,7 @@ public enum BlockFeatures
     Generator = 1 << 1,      // GENERATOR（发电机）
     Environmental = 1 << 2,  // ENVIRONMENTAL（环境/装饰）
     Thruster = 1 << 3,       // 推进器
+    Torquer = 1 << 13,        // TORQUER：纯力矩转向器
     Weapon = 1 << 4,         // 武器
     Turret = 1 << 5,         // 炮塔
     Shield = 1 << 6,         // 护盾
@@ -33,12 +34,20 @@ public enum BlockFeatures
 
 public static class ShipShapeLibrary
 {
+    /// <summary>原版 EPort_ 注册值，0x140235c7b–0x140235ceb；只列当前使用的类型。</summary>
+    public enum PortType
+    {
+        Normal = 1,
+        ThrusterOut = 8,
+        ThrusterIn = 16,
+    }
+
     /// <summary>
     /// 端口规格（照搬逆向 PortSpec：Offset + Direction + Type）。
     /// 端口在多边形边的中点，Direction 是边外法线（径向单位向量）。
     /// 两方块对接 = 两个 PortSpec 的世界 Offset 重合且 Direction 反向。
     /// </summary>
-    public readonly record struct Port(Vector2 Offset, Vector2 Direction, int Type = 0)
+    public readonly record struct Port(Vector2 Offset, Vector2 Direction, PortType Type = PortType.Normal, bool CanAttach = true)
     {
         /// <summary>端口在形状本地坐标（未旋转）下的位置（边中点）。兼容旧 API。</summary>
         public Vector2 LocalPosition => Offset;
@@ -51,16 +60,23 @@ public static class ShipShapeLibrary
         /// <summary>把端口法线变换到方块旋转后的世界法线。</summary>
         public Vector2 WorldNormal(float blockAngle) =>
             Direction.Rotated(blockAngle);
+
+        /// <summary>
+        /// 原版 0x1401e3c10：按两个类型的 OR 查询兼容表，并非类型相等。
+        /// NORMAL+THRUSTER_IN 可安装，THRUSTER_OUT+THRUSTER_IN 可串联。
+        /// </summary>
+        public bool CanConnect(Port other) => CanAttach && other.CanAttach &&
+            (int)(Type | other.Type) is 1 or 6 or 17 or 24 or 33 or 129 or 160;
     }
 
     /// <summary>
     /// 方块形状规格（照搬逆向 ShapeSpec：Vertices + Ports + Radius + Scale）。
-    /// 每种形状对应 TheShapes 表里的一个数字 ID（NumId），如 200=Command Module。
+    /// NumId 是方块类型 ID，几何形状与方块类型分别定义。
     /// </summary>
     public sealed class ShapeSpec
     {
         public required string Id { get; init; }              // 内部字符串 ID（兼容代码可读性）
-        public required int NumId { get; init; }             // Reassembly TheShapes 数字 ID（如 200）
+        public required int NumId { get; init; }             // Reassembly BlockType ID（如 200）
         public required string Label { get; init; }
         public required string Category { get; init; }
         public required uint ColorUint { get; init; }        // 照搬逆向 uint 颜色（0xRRGGBB）
@@ -90,10 +106,14 @@ public static class ShipShapeLibrary
         public float Hull { get; init; } = 20.0f;
         /// <summary>推力（推进器）。</summary>
         public float Thrust { get; init; }
+        /// <summary>Reassembly torquerTorque：只施加角力矩，不产生线性推力。</summary>
+        public float TorquerTorque { get; init; }
+        public Vector2 ExhaustPosition { get; init; }
+        public float ExhaustHalfWidth { get; init; }
         /// <summary>武器伤害。</summary>
         public float Damage { get; init; }
 
-        /// <summary>推力方向（本地，未旋转；喷口指向，力沿 -ThrustDirection 施加）。</summary>
+        /// <summary>施力方向（本地 +X）；排气方向相反。</summary>
         public Vector2 ThrustDirection { get; init; } = Vector2.Right;
         /// <summary>炮口方向（本地，未旋转）。</summary>
         public Vector2 WeaponDirection { get; init; } = Vector2.Right;
@@ -128,78 +148,77 @@ public static class ShipShapeLibrary
         (c & 0xFF) / 255.0f);
 
     /// <summary>
-    /// 方块形状表（照搬逆向 TheShapes）。用正多边形 + 端口描述每种方块。
+    /// 方块目录。原版已验证形状与 ReWorld 功能调参共用的运行时规格。
     /// 端口均匀分布在多边形边的中点，法线即边外法线（径向），
     /// 因此方块能沿任意边连接，组合出任意角度的多边形舰体。
-    /// 数字 ID 取自逆向 blocks_table.md：200=Command, 202=Thruster, 219=Hull, 205=Generator...
+    /// 正多边形共用边长；引擎梯形与 COMMAND 核心使用已提取的专用顶点。
     /// </summary>
     public static readonly IReadOnlyDictionary<string, ShapeSpec> Shapes =
         new Dictionary<string, ShapeSpec>(StringComparer.Ordinal)
         {
-            // 200 Command Module：核心，六边形，各边都有端口（照搬逆向 features=0xAEF300 含 COMMAND）。
-            ["core"] = MakeRegular("core", 200, "舰船核心", "核心", 0xF4F1DE,
-                BlockFeatures.Command, 6, 22.0f, mass: 12.0f, hull: 60.0f),
-            // 219 Hull：装甲骨架，方形（照搬逆向 features=0xAEF300）。
+            // shape 8：前部削角的 COMMAND 核心（insertLegacy），并非正六边形。
+            ["core"] = MakeCommand(),
+            // 219 Hull：装甲骨架，方形（BlockType 219）。
             ["hull"] = MakeRegular("hull", 219, "装甲骨架", "骨架", 0xA7B5C4,
-                BlockFeatures.None, 4, 18.0f, mass: 7.0f, hull: 40.0f),
-            // 复合装甲：方形，更厚。
+                BlockFeatures.None, 4, mass: 7.0f, hull: 40.0f),
+            // 复合装甲：保留 ReWorld 耐久调参。
             ["armor"] = MakeRegular("armor", 248, "复合装甲", "骨架", 0x8998A8,
-                BlockFeatures.None, 4, 20.0f, mass: 10.0f, hull: 70.0f),
-            // 202 Thruster：推进器，方形，推力沿 +X（照搬逆向 features=0x70A000 含 THRUSTER）。
-            ["thruster"] = MakeRegular("thruster", 202, "推进器", "机动", 0xCF7BFF,
-                BlockFeatures.Thruster, 4, 18.0f, mass: 5.0f, hull: 25.0f, thrust: 40.0f,
-                thrustDir: Vector2.Left),
+                BlockFeatures.None, 4, mass: 10.0f, hull: 70.0f),
+            // 源数据见 Reassembly/analysis/engine_geometry.json：梯形，不是矩形近似。
+            ["thruster"] = MakeThruster("thruster", 202, "小型引擎", 2, 4.5f, 4.194999695f, 130, 20_000, 5, 25),
+            ["thruster_medium"] = MakeThruster("thruster_medium", 203, "中型引擎", 3, 7.5f, 10, 150, 40_000, 8, 38),
+            ["thruster_large"] = MakeThruster("thruster_large", 204, "大型引擎", 4, 10, 15, 150, 80_000, 12, 56),
             // 姿态陀螺：小六边形。
             ["gyro"] = MakeRegular("gyro", 217, "姿态陀螺", "机动", 0xB58BE3,
-                BlockFeatures.None, 6, 14.0f, mass: 4.0f, hull: 25.0f),
-            // 脉冲激光：五边形（炮口指向 +X）。
+                BlockFeatures.Torquer, 6, mass: 4.0f, hull: 25.0f, torquerTorque: 120_000.0f),
+            // 脉冲激光：方形（炮口指向 +X）。
             ["laser"] = MakeRegular("laser", 251, "脉冲激光", "武器", 0xF07C8E,
-                BlockFeatures.Weapon, 5, 18.0f, mass: 5.0f, hull: 22.0f, damage: 6.0f,
+                BlockFeatures.Weapon, 4, mass: 5.0f, hull: 22.0f, damage: 6.0f,
                 weaponDir: Vector2.Right),
             // 动能炮：方形。
             ["cannon"] = MakeRegular("cannon", 218, "动能炮", "武器", 0xD97676,
-                BlockFeatures.Weapon, 4, 17.0f, mass: 6.0f, hull: 30.0f, damage: 4.0f,
+                BlockFeatures.Weapon, 4, mass: 6.0f, hull: 30.0f, damage: 4.0f,
                 weaponDir: Vector2.Right),
-            // 连续光束：五边形。
+            // 连续光束：方形。
             ["beam"] = MakeRegular("beam", 252, "连续光束", "武器", 0xFF7BB0,
-                BlockFeatures.Weapon, 5, 18.0f, mass: 6.0f, hull: 20.0f, damage: 8.0f,
+                BlockFeatures.Weapon, 4, mass: 6.0f, hull: 20.0f, damage: 8.0f,
                 weaponDir: Vector2.Right),
             // 磁轨炮：六边形（长条形武器）。
             ["railgun"] = MakeRegular("railgun", 228, "磁轨炮", "武器", 0xE9A56A,
-                BlockFeatures.Weapon, 6, 20.0f, mass: 8.0f, hull: 28.0f, damage: 10.0f,
+                BlockFeatures.Weapon, 6, mass: 8.0f, hull: 28.0f, damage: 10.0f,
                 weaponDir: Vector2.Right),
             // 导弹舱：方形。
             ["missile"] = MakeRegular("missile", 249, "导弹舱", "武器", 0xD8D27A,
-                BlockFeatures.Weapon | BlockFeatures.Launcher, 4, 18.0f, mass: 7.0f, hull: 24.0f, damage: 14.0f,
+                BlockFeatures.Weapon | BlockFeatures.Launcher, 4, mass: 7.0f, hull: 24.0f, damage: 14.0f,
                 weaponDir: Vector2.Right),
             // 偏转护盾：八边形近似圆形。
             ["shield"] = MakeRegular("shield", 247, "偏转护盾", "防御", 0x7BB7E8,
-                BlockFeatures.Shield, 8, 16.0f, mass: 6.0f, hull: 30.0f),
+                BlockFeatures.Shield, 8, mass: 6.0f, hull: 30.0f),
             // 点防御炮：小六边形。
             ["point_defense"] = MakeRegular("point_defense", 263, "点防御炮", "防御", 0xE28B8B,
-                BlockFeatures.Weapon, 6, 12.0f, mass: 4.0f, hull: 18.0f, damage: 3.0f,
+                BlockFeatures.Weapon, 6, mass: 4.0f, hull: 18.0f, damage: 3.0f,
                 weaponDir: Vector2.Right),
-            // 205 Generator：裂变炉，大六边形（照搬逆向 features=0xAEF300 含 GENERATOR）。
+            // 205 Generator：裂变炉，方形（BlockType 205）。
             ["reactor"] = MakeRegular("reactor", 205, "裂变炉", "能源", 0xE0B45D,
-                BlockFeatures.Generator, 6, 23.0f, mass: 10.0f, hull: 45.0f),
-            // 聚变发电机：五边形。
+                BlockFeatures.Generator, 4, mass: 10.0f, hull: 45.0f),
+            // 聚变发电机：三级方形。
             ["generator"] = MakeRegular("generator", 207, "聚变发电机", "能源", 0xF0B85E,
-                BlockFeatures.Generator, 5, 17.0f, mass: 7.0f, hull: 35.0f),
-            // 武器电容：小方形。
+                BlockFeatures.Generator, 4, mass: 7.0f, hull: 35.0f, nativeScale: 3),
+            // 武器电容：八边形。
             ["capacitor"] = MakeRegular("capacitor", 261, "武器电容", "能源", 0x6FA7D8,
-                BlockFeatures.None, 4, 12.0f, mass: 4.0f, hull: 18.0f),
+                BlockFeatures.None, 8, mass: 4.0f, hull: 18.0f),
             // 深空传感器：六边形。
             ["sensor"] = MakeRegular("sensor", 262, "深空传感器", "系统", 0x72C7C2,
-                BlockFeatures.None, 6, 13.0f, mass: 3.0f, hull: 18.0f),
+                BlockFeatures.None, 6, mass: 3.0f, hull: 18.0f),
             // 散热翼：六边形。
             ["radiator"] = MakeRegular("radiator", 416, "散热翼", "散热", 0x6EC6C7,
-                BlockFeatures.None, 6, 18.0f, mass: 3.0f, hull: 18.0f),
-            // 货运舱：大方形。
+                BlockFeatures.None, 6, mass: 3.0f, hull: 18.0f),
+            // 货运舱：八边形。
             ["cargo"] = MakeRegular("cargo", 201, "货运舱", "物流", 0xD0A46A,
-                BlockFeatures.None, 4, 24.0f, mass: 8.0f, hull: 50.0f),
-            // 牵引光束：五边形（照搬逆向 features 含 TRACTOR）。
+                BlockFeatures.None, 8, mass: 8.0f, hull: 50.0f),
+            // 牵引光束：二级八边形。
             ["tractor"] = MakeRegular("tractor", 275, "牵引光束", "物流", 0xC58CDA,
-                BlockFeatures.Tractor, 5, 15.0f, mass: 5.0f, hull: 22.0f),
+                BlockFeatures.Tractor, 8, mass: 5.0f, hull: 22.0f, nativeScale: 2),
         };
 
     /// <summary>
@@ -207,14 +226,17 @@ public static class ShipShapeLibrary
     /// 端口放在边的中点，Direction 是边外法线（径向单位向量）。
     /// 端口距离 = circumradius * cos(π/n)（边中点到中心的距离），保证端口正好落在边上。
     /// </summary>
-    private static List<Port> PortsForSides(int sides, float radius)
+    private static List<Port> PortsForSides(int sides, float radius, float startAngle = -Mathf.Pi * 0.5f)
     {
         var ports = new List<Port>();
         var halfStepRad = Mathf.Pi / sides; // 边中点相对顶点偏移半个步距。
         var distance = radius * Mathf.Cos(halfStepRad); // 边中点到中心的距离。
         for (var i = 0; i < sides; i++)
         {
-            var angle = halfStepRad + i * Mathf.Tau / sides; // 边中点方向。
+            // 顶点从 startAngle 开始，所以第一条边的中点也必须以
+            // startAngle + π/n 开始。此前遗漏 startAngle，端口整体偏转 90°，
+            // 造成“节点看似重合但不在边上”。
+            var angle = startAngle + halfStepRad + i * Mathf.Tau / sides;
             var offset = new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * distance;
             var direction = new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)).Normalized(); // 边外法线（径向）。
             ports.Add(new Port(offset, direction));
@@ -225,16 +247,16 @@ public static class ShipShapeLibrary
     /// <summary>构造一个正多边形形状规格（便捷工厂，对齐逆向 insertRegularPoly）。</summary>
     private static ShapeSpec MakeRegular(
         string id, int numId, string label, string category, uint colorUint,
-        BlockFeatures features, int sides, float apothem,
+        BlockFeatures features, int sides,
         float mass = 5.0f, float hull = 20.0f,
         float thrust = 0.0f, float damage = 0.0f,
-        Vector2? thrustDir = null, Vector2? weaponDir = null)
+        Vector2? thrustDir = null, Vector2? weaponDir = null, float torquerTorque = 0.0f, int nativeScale = 1)
     {
-        // 逆向的 regular polygon 使用 apothem 作为结构尺寸：所有边的
-        // 连接节点落在同一套“边距”坐标上，避免三角形、方形、六边形
-        // 仅因边数不同就出现不可控的连接间距。
-        var circumradius = apothem / Mathf.Cos(Mathf.Pi / sides);
-        var startAngle = -Mathf.Pi * 0.5f;
+        // 共用 10 个原版单位的边长（显示比例为 2），不能为每个功能随意指定半径。
+        // 正方形、三角形、六边形因此具有相同接缝长度。
+        var sideLength = 10.0f * DisplayScale * nativeScale;
+        var circumradius = sideLength / (2.0f * Mathf.Sin(Mathf.Pi / sides));
+        var startAngle = sides % 2 == 0 ? -Mathf.Pi / sides : 0.0f;
         var vertices = new Vector2[sides];
         for (var i = 0; i < sides; i++)
         {
@@ -250,15 +272,80 @@ public static class ShipShapeLibrary
             ColorUint = colorUint,
             Features = features,
             Sides = sides,
+            Scale = nativeScale,
             Radius = circumradius,
             VerticesField = vertices,
-            Ports = PortsForSides(sides, circumradius),
+            Ports = PortsForSides(sides, circumradius, startAngle),
             Mass = mass,
             Hull = hull,
             Thrust = thrust,
             Damage = damage,
+            TorquerTorque = torquerTorque,
             ThrustDirection = thrustDir ?? Vector2.Right,
             WeaponDirection = weaponDir ?? Vector2.Right,
+        };
+    }
+
+    public const float DisplayScale = 2.0f;
+
+    /// <summary>0x14023a390 的梯形公式，0x140238a89 起的三档常量。均减去顶点均值。</summary>
+    private static ShapeSpec MakeThruster(string id, int numId, string label, int scale,
+        float baseLength, float legLength, float degrees, float thrust, float mass, float hull)
+    {
+        var angle = Mathf.DegToRad(degrees);
+        var x = -Mathf.Sin(angle) * legLength;
+        var y = Mathf.Cos(angle) * legLength;
+        var center = new Vector2(x * 0.5f, baseLength * 0.5f);
+        var vertices = new[]
+        {
+            (Vector2.Zero - center) * DisplayScale,
+            (new Vector2(x, y) - center) * DisplayScale,
+            (new Vector2(x, baseLength - y) - center) * DisplayScale,
+            (new Vector2(0, baseLength) - center) * DisplayScale,
+        };
+        // shape 18 的跳转表选择 IN=16 / OUT=8（不是 WEAPON_OUT=2）。
+        // 尾口可接下一台引擎的前口；普通装甲不能堵住尾口。
+        var ports = new List<Port>
+        {
+            new((vertices[3] + vertices[0]) * 0.5f, Vector2.Right, PortType.ThrusterIn),
+            new((vertices[1] + vertices[2]) * 0.5f, Vector2.Left, PortType.ThrusterOut),
+        };
+        return new ShapeSpec
+        {
+            Id = id, NumId = numId, Label = label, Category = "机动", ColorUint = 0x0C4E61,
+            Features = BlockFeatures.Thruster, VerticesField = vertices, Ports = ports,
+            Radius = vertices.Max(v => v.Length()), Scale = scale, Sides = 4,
+            ExhaustPosition = (vertices[1] + vertices[2]) * 0.5f,
+            ExhaustHalfWidth = vertices[1].DistanceTo(vertices[2]) * 0.5f,
+            Mass = mass, Hull = hull, Thrust = thrust, ThrustDirection = Vector2.Right,
+        };
+    }
+
+    private static ShapeSpec MakeCommand()
+    {
+        // shape 8, scale 1: h=5, bevel=10*(sqrt(2)-1)/2.
+        var h = 5.0f * DisplayScale;
+        var bevel = (Mathf.Sqrt(2) - 1) * h;
+        var raw = new[]
+        {
+            new Vector2(-h, h), new Vector2(bevel, h), new Vector2(h, bevel),
+            new Vector2(h, -bevel), new Vector2(bevel, -h), new Vector2(-h, -h),
+        };
+        var mean = raw.Aggregate(Vector2.Zero, (sum, v) => sum + v) / raw.Length;
+        var vertices = raw.Select(v => v - mean).ToArray();
+        var ports = new List<Port>();
+        for (var i = 0; i < vertices.Length; i++)
+        {
+            var a = vertices[i];
+            var b = vertices[(i + 1) % vertices.Length];
+            var edge = b - a;
+            ports.Add(new Port((a + b) * 0.5f, new Vector2(-edge.Y, edge.X).Normalized()));
+        }
+        return new ShapeSpec
+        {
+            Id = "core", NumId = 200, Label = "舰船核心", Category = "核心", ColorUint = 0x069A95,
+            Features = BlockFeatures.Command, VerticesField = vertices, Ports = ports,
+            Radius = vertices.Max(v => v.Length()), Sides = vertices.Length, Mass = 12, Hull = 60,
         };
     }
 
@@ -268,7 +355,7 @@ public static class ShipShapeLibrary
     /// <summary>建造面板的方块顺序（调色板按此顺序展示，鼠标点击选择）。</summary>
     public static readonly string[] BuildOrder =
     {
-        "core", "hull", "armor", "thruster", "gyro",
+        "core", "hull", "armor", "thruster", "thruster_medium", "thruster_large", "gyro",
         "laser", "cannon", "beam", "railgun", "missile",
         "shield", "point_defense", "reactor", "generator", "capacitor",
         "sensor", "radiator", "cargo", "tractor",

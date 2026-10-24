@@ -7,7 +7,7 @@ using System.Linq;
 /// 无限宇宙探索视图：玩家在无边的 2D 太空中自由飞行。
 /// 星球/空间站/小行星带按扇区程序化生成（靠近才计算），
 /// 相机跟随 + 缩放，右下角小地图显示周边天体。
-/// 纯宇宙探索，不含降落/工厂（本轮交付范围）。
+/// 星球采用航行尺度；预留轨道接近范围，地表场景另行接入。
 /// </summary>
 public partial class UniverseView : Node2D
 {
@@ -20,12 +20,15 @@ public partial class UniverseView : Node2D
     private float _playerAngularVelocity;
 
     private Vector2 _cameraPosition = Vector2.Zero;
-    private float _cameraZoom = 1.0f;
-    private const float ZoomMin = 0.25f;
+    private float _cameraZoom = 0.65f;
+    private const float ZoomMin = 0.06f;
     private const float ZoomMax = 2.5f;
 
     private readonly List<UniverseGenerator.CelestialBody> _visibleBodies = new();
     private UniverseGenerator.CelestialBody? _nearestBody;
+    private UniverseGenerator.CelestialBody? _targetBody;
+    private Vector2I _loadedSector = new(int.MaxValue, int.MaxValue);
+    private int _loadedRadius = -1;
     private string _hoverBodyName = "";
     private float _currentGravity;   // 当前所受合引力加速度（用于 HUD 显示）。
 
@@ -49,18 +52,23 @@ public partial class UniverseView : Node2D
 
     private float ShipTotalThrust => _ship?.TotalThrust ?? 0.0f;
     private float ShipTotalMass => _ship?.TotalMass ?? 1.0f;
+    public Vector2 PlayerPosition => _playerPosition;
+    public UniverseGenerator.CelestialBody? TargetBody => _targetBody;
 
     public override void _Ready()
     {
         _font = CreateUiFont();
-        // 玩家初始在原点附近。
+        // 开局就在母星外侧，能看见巨大的星球弧面，也可沿切向绕行。
+        var homeBodies = UniverseGenerator.GenerateSector(Vector2I.Zero);
+        _targetBody = homeBodies[0];
+        _playerPosition = UniverseNavigation.SpawnNear(_targetBody, homeBodies, 60);
         _cameraPosition = _playerPosition;
         RefreshVisibleBodies();
     }
 
     public override void _Process(double delta)
     {
-        var dt = (float)delta;
+        var dt = (float)Math.Min(delta, 0.05);
         HandleFlightInput(dt);
         UpdateCamera(dt);
 
@@ -79,7 +87,7 @@ public partial class UniverseView : Node2D
     {
         float throttle = 0.0f;
         if (Input.IsKeyPressed(Key.W) || Input.IsKeyPressed(Key.Up)) throttle += 1.0f;
-        if (Input.IsKeyPressed(Key.S) || Input.IsKeyPressed(Key.Down)) throttle -= 0.5f;
+        if (Input.IsKeyPressed(Key.S) || Input.IsKeyPressed(Key.Down)) throttle -= 1.0f;
 
         float yaw = 0.0f;
         if (Input.IsKeyPressed(Key.A) || Input.IsKeyPressed(Key.Left)) yaw -= 1.0f;
@@ -90,7 +98,7 @@ public partial class UniverseView : Node2D
 
         // 推力：按模块推进器挂点施力（对齐 Reassembly「推进器在挂点施力」）。
         // 有真实舰体时用模块推进器 + 差动转向；否则回退到占位三角的固定推力。
-        if (_ship is not null && ShipTotalThrust > 0.0f)
+        if (_ship is not null)
         {
             ApplyModuleThrust(throttle, yaw, dt);
         }
@@ -113,68 +121,20 @@ public partial class UniverseView : Node2D
             _playerVelocity = _playerVelocity.Normalized() * maxSpeed;
 
         _playerPosition += _playerVelocity * dt;
+        var shipRadius = _ship?.BoundingRadius() ?? 24;
+        foreach (var body in _visibleBodies)
+            UniverseNavigation.ResolveSurface(body, shipRadius, ref _playerPosition, ref _playerVelocity);
     }
 
     /// <summary>按模块推进器施力：推力沿各挂点方向，偏轴推进器产生转向力矩。</summary>
     private void ApplyModuleThrust(float throttle, float yaw, float dt)
     {
-        var mounts = ThrusterMounts;
-        var forceSum = Vector2.Zero;
-        var torqueSum = 0.0f;
-
-        foreach (var mount in mounts)
-        {
-            var worldForce = mount.Force.Rotated(_playerHeading);
-            var activation = 0.0f;
-
-            // 前进：点火力方向与船头（+X 世界朝向）同向的推进器。
-            if (throttle > 0.0f)
-            {
-                var forwardAlign = Mathf.Max(0.0f, worldForce.Dot(Vector2.Right.Rotated(_playerHeading)));
-                activation = Mathf.Max(activation, forwardAlign * throttle);
-            }
-            else if (throttle < 0.0f)
-            {
-                var reverseAlign = Mathf.Max(0.0f, worldForce.Dot(-Vector2.Right.Rotated(_playerHeading)));
-                activation = Mathf.Max(activation, reverseAlign * -throttle);
-            }
-
-            // 转向：偏轴推进器差动点火，产生力矩。
-            if (yaw != 0.0f)
-            {
-                var steerTorque = mount.Offset.X * worldForce.Y - mount.Offset.Y * worldForce.X;
-                if (steerTorque * yaw > 0.0f)
-                    activation = Mathf.Max(activation, Mathf.Min(1.0f, Mathf.Abs(steerTorque) * 0.05f) * Mathf.Abs(yaw));
-            }
-
-            if (activation <= 0.0f)
-            {
-                _thrusterActivity[KeyFor(mount)] = 0.0f;
-                continue;
-            }
-
-            forceSum += worldForce * (mount.Power * activation);
-            var torque = mount.Offset.X * worldForce.Y - mount.Offset.Y * worldForce.X;
-            torqueSum += torque * mount.Power * activation;
-            _thrusterActivity[KeyFor(mount)] = activation;
-        }
-
-        var massResponse = Mathf.Clamp(34.0f / Mathf.Max(1.0f, ShipTotalMass), 0.35f, 1.35f);
-        if (forceSum.LengthSquared() > 0.0001f)
-        {
-            var acceleration = forceSum.Normalized() * (forceSum.Length() / Mathf.Max(1.0f, ShipTotalMass)) * massResponse * 22.0f;
-            _playerVelocity += acceleration * dt;
-        }
-
-        if (Mathf.Abs(torqueSum) > 0.0001f)
-        {
-            var angularAccel = Mathf.Clamp(torqueSum / Mathf.Max(1.0f, ShipTotalMass), -6.0f, 6.0f) * massResponse * 0.35f;
-            _playerAngularVelocity += angularAccel * dt;
-        }
-        else
-        {
-            _playerAngularVelocity = Mathf.Lerp(_playerAngularVelocity, yaw * 2.6f, 0.18f);
-        }
+        if (_ship is null) return;
+        var result = ShipPropulsion.Evaluate(_ship, ShipPropulsion.ReadTranslation(), yaw, _thrusterActivity);
+        _playerVelocity += result.LocalForce.Rotated(_playerHeading) / Mathf.Max(1, ShipTotalMass) * dt;
+        _playerAngularVelocity += result.Torque / _ship.MomentOfInertia() * dt;
+        _playerAngularVelocity *= Mathf.Exp(-2.5f * dt);
+        _playerAngularVelocity = Mathf.Clamp(_playerAngularVelocity, -4.2f, 4.2f);
     }
 
     /// <summary>推进器挂点作为活动映射的键（用方块 Id）。</summary>
@@ -231,6 +191,17 @@ public partial class UniverseView : Node2D
             {
                 _cameraZoom = Mathf.Clamp(_cameraZoom / 1.12f, ZoomMin, ZoomMax);
             }
+            else if (mouse.ButtonIndex == MouseButton.Left)
+            {
+                var world = ScreenToWorld(mouse.Position);
+                var overMap = MiniMapRect.HasPoint(mouse.Position);
+                _targetBody = _visibleBodies
+                    .Where(b => overMap ? MiniMapPoint(b.Position).DistanceTo(mouse.Position) < 12 :
+                        b.Position.DistanceTo(world) <= b.Radius + 12 / _cameraZoom)
+                    .OrderBy(b => overMap ? MiniMapPoint(b.Position).DistanceTo(mouse.Position) : b.Position.DistanceTo(world))
+                    .FirstOrDefault() ?? _targetBody;
+            }
+            RefreshVisibleBodies();
         }
         else if (@event is InputEventMouseMotion motion)
         {
@@ -250,15 +221,22 @@ public partial class UniverseView : Node2D
 
     private void RefreshVisibleBodies()
     {
-        _visibleBodies.Clear();
-        // 根据当前缩放决定可见扇区半径：缩得越远，加载越远的天体。
-        var sectorRadius = (int)Mathf.Clamp(Mathf.Ceil(3.0f / _cameraZoom), 1, 6);
-        _visibleBodies.AddRange(UniverseGenerator.GetNearbyBodies(_playerPosition, sectorRadius));
+        // 视野外也保留完整引力井；只在扇区或缩放范围改变时重新生成。
+        var sector = UniverseGenerator.WorldToSector(_playerPosition);
+        var reach = new Vector2(ViewWidth, ViewHeight).Length() * 0.5f / _cameraZoom + UniverseGenerator.StarRadiusMax * 2.6f;
+        var sectorRadius = Math.Clamp(Mathf.CeilToInt(reach / UniverseGenerator.SectorSize), 1, 6);
+        if (sector != _loadedSector || sectorRadius != _loadedRadius)
+        {
+            _visibleBodies.Clear();
+            _visibleBodies.AddRange(UniverseGenerator.GetNearbyBodies(_playerPosition, sectorRadius));
+            _loadedSector = sector;
+            _loadedRadius = sectorRadius;
+        }
 
         // 找最近的天体。
         _nearestBody = _visibleBodies
             .Where(body => body.Kind is UniverseGenerator.CelestialKind.Planet or UniverseGenerator.CelestialKind.Station)
-            .OrderBy(body => body.Position.DistanceTo(_playerPosition))
+            .OrderBy(body => body.SurfaceDistance(_playerPosition))
             .FirstOrDefault();
     }
 
@@ -281,13 +259,25 @@ public partial class UniverseView : Node2D
         DrawSetTransform(new Vector2(ViewWidth, ViewHeight) * 0.5f - _cameraPosition * _cameraZoom, 0.0f, new Vector2(_cameraZoom, _cameraZoom));
         DrawStars();
         DrawSectorGrid();
+        var halfView = new Vector2(ViewWidth, ViewHeight) * 0.5f / _cameraZoom;
+        var worldView = new Rect2(_cameraPosition - halfView, halfView * 2);
         foreach (var body in _visibleBodies)
-            DrawCelestialBody(body);
+            if (worldView.Grow(body.Radius * 1.65f).HasPoint(body.Position)) DrawCelestialBody(body);
         DrawPlayer();
         DrawSetTransform(Vector2.Zero, 0.0f, Vector2.One);
 
+        DrawBodyLabels();
+        if (_cameraZoom < 0.3f)
+        {
+            var player = WorldToScreen(_playerPosition);
+            var forward = Vector2.Right.Rotated(_playerHeading);
+            var side = forward.Orthogonal();
+            DrawPolyline(new[] { player - forward * 5 + side * 4, player + forward * 7,
+                player - forward * 5 - side * 4 }, new Color("#e1eceb"), 1.5f, true);
+        }
         DrawHud();
         DrawMiniMap();
+        DrawTargetIndicator();
     }
 
     private void DrawStars()
@@ -338,17 +328,10 @@ public partial class UniverseView : Node2D
         var position = body.Position;
         var color = new Color(body.ColorHex);
 
-        // 引力井：多层同心圆，越靠近中心越亮，直观展示引力范围与强度。
-        if (body.GravityRadius > 0.0f)
+        // 引力边界轻描，不再用大片蓝色同心圆盖住星球表面。
+        if (body.GravityRadius > 0.0f && body.Id == _targetBody?.Id)
         {
-            var rings = 5;
-            for (var i = rings; i >= 1; i--)
-            {
-                var r = body.GravityRadius * i / rings;
-                var alpha = 0.10f * (1.0f - (float)(i - 1) / rings);
-                DrawCircle(position, r, new Color("#7bb7e8", alpha));
-            }
-            DrawCircle(position, body.GravityRadius, new Color("#7bb7e8", 0.35f), false, 1.0f / _cameraZoom);
+            DrawCircle(position, body.GravityRadius, new Color("#7bb7e8", 0.10f), false, 1.0f / _cameraZoom);
         }
 
         switch (body.Kind)
@@ -361,12 +344,7 @@ public partial class UniverseView : Node2D
                 break;
 
             case UniverseGenerator.CelestialKind.Planet:
-                // 星球：球体 + 环/大气层。
-                DrawCircle(position, body.Radius, color);
-                DrawCircle(position, body.Radius, new Color(0, 0, 0, 0.35f), false, 1.5f);
-                DrawArc(position, body.Radius * 1.25f, -0.4f, Mathf.Pi + 0.4f, 40, new Color("#7a9cb0", 0.5f), 1.5f);
-                // 高光。
-                DrawCircle(position + new Vector2(-body.Radius * 0.3f, -body.Radius * 0.3f), body.Radius * 0.25f, new Color(1, 1, 1, 0.25f));
+                DrawPlanet(body);
                 break;
 
             case UniverseGenerator.CelestialKind.Station:
@@ -403,13 +381,71 @@ public partial class UniverseView : Node2D
                 break;
         }
 
-        // 名称标签（缩放足够近时）。
-        if (_cameraZoom > 0.55f || body.Kind == UniverseGenerator.CelestialKind.Planet)
+        if (body.Kind == UniverseGenerator.CelestialKind.Planet && body.Id == _targetBody?.Id)
         {
-            DrawString(_font, position + new Vector2(-body.Radius, body.Radius + 16.0f / _cameraZoom),
-                body.Name, HorizontalAlignment.Left, -1, (int)Mathf.Clamp(12.0f / _cameraZoom, 9, 22),
-                new Color("#b7c7d4", 0.9f));
+            var orbitColor = new Color("#83c7c0", 0.35f);
+            for (var i = 0; i < 48; i++)
+                DrawArc(position, body.ApproachRadius, i * Mathf.Tau / 48, (i + 0.52f) * Mathf.Tau / 48, 4, orbitColor, 1 / _cameraZoom);
         }
+
+    }
+
+    private void DrawBodyLabels()
+    {
+        // 标签在屏幕空间绘制，航行视野拉远时仍可读。
+        foreach (var body in _visibleBodies)
+        {
+            if (body.Kind == UniverseGenerator.CelestialKind.AsteroidField) continue;
+            var point = WorldToScreen(body.Position) + Vector2.Down * (body.Radius * _cameraZoom + 20);
+            if (point.X < 96 || point.X > ViewWidth - 96 || point.Y < 80 || point.Y > ViewHeight - 80) continue;
+            if (point.X < 310 && point.Y < 230 || MiniMapRect.Grow(20).HasPoint(point)) continue;
+            DrawString(_font, point - new Vector2(95, 0), body.Name, HorizontalAlignment.Center, 190, 12,
+                new Color("#b7c7d4", 0.8f));
+        }
+    }
+
+    private void DrawPlanet(UniverseGenerator.CelestialBody body)
+    {
+        var position = body.Position;
+        var radius = body.Radius;
+        var color = new Color(body.ColorHex);
+        DrawCircle(position, radius * 1.035f, new Color("#7199b0", 0.07f));
+        DrawCircle(position, radius * 1.012f, new Color("#9cc4d2", 0.15f));
+        DrawCircle(position, radius, color.Darkened(0.12f));
+
+        // 稳定的表面斑块；全部在球面圆盘内，不随扇区刷新闪动。
+        var seed = 17;
+        foreach (var c in body.Id) seed = unchecked(seed * 31 + c);
+        var rng = new Random(seed);
+        for (var i = 0; i < 18; i++)
+        {
+            var angle = (float)rng.NextDouble() * Mathf.Tau;
+            var distance = (float)rng.NextDouble() * radius * 0.68f;
+            var patchRadius = radius * (0.06f + (float)rng.NextDouble() * 0.18f);
+            var center = position + Vector2.Right.Rotated(angle) * distance;
+            var points = new Vector2[12];
+            for (var j = 0; j < points.Length; j++)
+                points[j] = center + Vector2.Right.Rotated(j * Mathf.Tau / points.Length) *
+                    patchRadius * (0.6f + (float)rng.NextDouble() * 0.4f);
+            var patchColor = i % 3 == 0 ? color.Lightened(0.18f) : color.Darkened(0.24f);
+            DrawColoredPolygon(points, patchColor);
+        }
+
+        // 圆盘边缘到晨昏线之间的月牙阴影，球体轮廓保持圆形。
+        var shadow = new List<Vector2>();
+        for (var i = 0; i <= 64; i++)
+        {
+            var a = -Mathf.Pi * 0.5f + i * Mathf.Pi / 64;
+            shadow.Add(position + new Vector2(Mathf.Cos(a), Mathf.Sin(a)) * radius);
+        }
+        for (var i = 63; i > 0; i--)
+        {
+            var a = -Mathf.Pi * 0.5f + i * Mathf.Pi / 64;
+            shadow.Add(position + new Vector2(Mathf.Cos(a) * 0.18f, Mathf.Sin(a)) * radius);
+        }
+        DrawColoredPolygon(shadow.ToArray(), new Color("#020712", 0.65f));
+        DrawArc(position, radius * 1.004f, Mathf.Pi * 0.78f, Mathf.Pi * 1.52f, 96,
+            new Color("#bbd9e1", 0.6f), Mathf.Max(1 / _cameraZoom, radius * 0.0025f), true);
     }
 
     private void DrawPlayer()
@@ -441,22 +477,22 @@ public partial class UniverseView : Node2D
     private void DrawHud()
     {
         // 顶部坐标与速度信息。
-        DrawRect(new Rect2(new Vector2(0, 0), new Vector2(ViewWidth, 40.0f)), new Color("#04070d", 0.85f));
+        DrawRect(new Rect2(new Vector2(0, 0), new Vector2(ViewWidth, 62.0f)), new Color("#04070d", 0.85f));
         var sector = UniverseGenerator.WorldToSector(_playerPosition);
-        DrawString(_font, new Vector2(16, 12), $"扇区 [{sector.X}, {sector.Y}]   坐标 ({_playerPosition.X:0}, {_playerPosition.Y:0})   速度 {_playerVelocity.Length():0}   缩放 {_cameraZoom:P0}",
+        DrawString(_font, new Vector2(16, 24), $"扇区 [{sector.X}, {sector.Y}]   坐标 ({_playerPosition.X:0}, {_playerPosition.Y:0})   速度 {_playerVelocity.Length():0}   缩放 {_cameraZoom:P0}",
             HorizontalAlignment.Left, -1, 14, new Color("#b7c7d4"));
 
         // 最近天体提示。
         if (_nearestBody is not null)
         {
-            var distance = _nearestBody.Position.DistanceTo(_playerPosition);
+            var distance = _nearestBody.SurfaceDistance(_playerPosition);
             var kindLabel = _nearestBody.Kind switch
             {
                 UniverseGenerator.CelestialKind.Planet => "星球",
                 UniverseGenerator.CelestialKind.Station => "空间站",
                 _ => "天体",
             };
-            DrawString(_font, new Vector2(16, 34), $"最近{kindLabel}：{_nearestBody.Name} · {distance:0} 单位",
+            DrawString(_font, new Vector2(16, 46), $"最近{kindLabel}：{_nearestBody.Name} · 距表面 {distance:0}",
                 HorizontalAlignment.Left, -1, 12, new Color("#7f93a8"));
         }
 
@@ -465,28 +501,66 @@ public partial class UniverseView : Node2D
         {
             var gravityLabel = _currentGravity > 400.0f ? "⚠ 强引力（难以逃逸）" : (_currentGravity > 60.0f ? "引力作用中" : "弱引力");
             var gravityColor = _currentGravity > 400.0f ? new Color("#e8a07b") : new Color("#7bb7e8");
-            DrawString(_font, new Vector2(16, 54), $"引力 {_currentGravity:0} m/s² · {gravityLabel}",
+            DrawString(_font, new Vector2(16, 218), $"引力 {_currentGravity:0} · {gravityLabel}",
                 HorizontalAlignment.Left, -1, 12, gravityColor);
         }
 
         // 悬停天体名。
         if (_hoverBodyName.Length > 0)
         {
-            DrawString(_font, new Vector2(ViewWidth - 220, ViewHeight - 60), _hoverBodyName,
+            DrawString(_font, new Vector2(ViewWidth - 230, ViewHeight - 236), _hoverBodyName,
                 HorizontalAlignment.Left, -1, 14, new Color("#f4f1de"));
         }
 
         // 操作提示。
-        DrawString(_font, new Vector2(16, ViewHeight - 28), "W/S 推进 · A/D 转向 · 滚轮缩放 · 星球/恒星有引力井（靠近会被吸引）",
+        DrawString(_font, new Vector2(16, ViewHeight - 46), "W/S 推进 · A/D 转向 · Q/E 平移 · M 造舰 · Tab 航图",
             HorizontalAlignment.Left, -1, 13, new Color("#6e8d9c"));
+        DrawString(_font, new Vector2(16, ViewHeight - 24), "滚轮：近景 / 航行视野 · 左键选择天体 · F11 / Alt+Enter 全屏",
+            HorizontalAlignment.Left, -1, 12, new Color("#6e8d9c"));
+
+        if (_targetBody is { } target)
+        {
+            DrawRect(new Rect2(16, 76, 290, 124), new Color("#0b151f", 0.88f));
+            DrawRect(new Rect2(16, 76, 3, 124), new Color("#83c7c0"));
+            DrawString(_font, new Vector2(30, 100), target.Name, HorizontalAlignment.Left, 262, 16, new Color("#e1eceb"));
+            var kind = target.Kind == UniverseGenerator.CelestialKind.Planet ? "行星" : target.Kind == UniverseGenerator.CelestialKind.Station ? "空间站" : "天体";
+            DrawString(_font, new Vector2(30, 124), $"{kind} · 直径 {target.Radius * 2:0} · 距表面 {target.SurfaceDistance(_playerPosition):0}",
+                HorizontalAlignment.Left, 262, 12, new Color("#9bb2c3"));
+            var inApproach = target.Position.DistanceTo(_playerPosition) <= target.ApproachRadius;
+            DrawString(_font, new Vector2(30, 150), inApproach ? "已进入轨道接近区" : "深空航行 · 接近目标", HorizontalAlignment.Left, 262, 13, new Color("#83c7c0"));
+            DrawString(_font, new Vector2(30, 180), target.Kind == UniverseGenerator.CelestialKind.Planet ? "虚线：轨道接近范围 · 沿切向绕行" : "滚轮拉远可查看周边天体",
+                HorizontalAlignment.Left, 262, 12, new Color("#6e8d9c"));
+        }
+    }
+
+    private const float MiniMapSize = 200;
+    private const float MiniMapRange = UniverseGenerator.SectorSize * 2;
+    private Rect2 MiniMapRect => new(ViewWidth - MiniMapSize - 16, ViewHeight - MiniMapSize - 16, MiniMapSize, MiniMapSize);
+    private Vector2 MiniMapPoint(Vector2 position) => MiniMapRect.GetCenter() + (position - _playerPosition) / MiniMapRange * MiniMapSize * 0.5f;
+
+    private void DrawTargetIndicator()
+    {
+        if (_targetBody is not { } target) return;
+        var point = WorldToScreen(target.Position);
+        var clamped = point.Clamp(new Vector2(336, 92), new Vector2(ViewWidth - 238, ViewHeight - 100));
+        if (clamped.DistanceTo(point) < 1)
+            DrawCircle(point, 14, new Color("#83c7c0", 0.8f), false, 1);
+        else
+        {
+            var direction = (point - clamped).Normalized();
+            var side = direction.Orthogonal() * 5;
+            DrawPolyline(new[] { clamped - direction * 10 + side, clamped, clamped - direction * 10 - side }, new Color("#83c7c0"), 2, true);
+        }
+        var labelLeft = clamped.X > ViewWidth * 0.5f ? clamped.X - 210 : clamped.X + 16;
+        DrawString(_font, new Vector2(labelLeft, clamped.Y - 14), $"{target.Name} · {target.SurfaceDistance(_playerPosition):0}",
+            HorizontalAlignment.Left, 210, 12, new Color("#83c7c0"));
     }
 
     private void DrawMiniMap()
     {
-        var mapSize = 200.0f;
-        var margin = 16.0f;
-        var mapPos = new Vector2(ViewWidth - mapSize - margin, ViewHeight - mapSize - margin);
-        var mapRect = new Rect2(mapPos, new Vector2(mapSize, mapSize));
+        var mapSize = MiniMapSize;
+        var mapRect = MiniMapRect;
+        var mapPos = mapRect.Position;
         DrawRect(mapRect, new Color("#0b151f", 0.92f));
         DrawRect(mapRect, new Color("#2d5263", 0.8f), false, 1.0f);
 
@@ -509,8 +583,10 @@ public partial class UniverseView : Node2D
                 UniverseGenerator.CelestialKind.Star => new Color("#f2cc60"),
                 _ => new Color("#5a6878"),
             };
-            var dotRadius = body.Kind == UniverseGenerator.CelestialKind.Star ? 3.0f : 2.0f;
+            var dotRadius = Mathf.Clamp(body.Radius / mapRange * mapSize * 0.5f, 2, 16);
             DrawCircle(mapPoint, dotRadius, dotColor);
+            if (body.Id == _targetBody?.Id)
+                DrawCircle(mapPoint, dotRadius + 3, new Color("#83c7c0"), false, 1);
         }
 
         // 玩家位置（小地图中心）。

@@ -70,7 +70,8 @@ public sealed class ModularShip
     {
         if (!ShipShapeLibrary.Shapes.ContainsKey(shapeId))
             return null!;
-        var block = new Block { Id = _nextId++, ShapeId = shapeId, Position = position, Angle = angle };
+        var block = new Block { Id = _nextId++, ShapeId = shapeId, Position = position, Angle = angle,
+            Health = ShipShapeLibrary.Get(shapeId).Hull };
         _blocks.Add(block);
         RefreshConnections();
         Changed?.Invoke();
@@ -125,8 +126,8 @@ public sealed class ModularShip
                         // Reassembly 端口是有方向的：位置重合还不够，两个节点必须
                         // 面向彼此，避免背面或交叉端口被误判为结构连接。
                         if (wa.DistanceSquaredTo(wb) <= tolerance * tolerance &&
-                            sa.Ports[pa].Type == sb.Ports[pb].Type &&
-                            normalA.Dot(normalB) <= -0.94f)
+                            sa.Ports[pa].CanConnect(sb.Ports[pb]) &&
+                            normalA.Dot(normalB) <= -0.999f)
                         {
                             a.PortConnected![pa] = true;
                             b.PortConnected![pb] = true;
@@ -145,6 +146,7 @@ public sealed class ModularShip
         copy._nextId = _nextId;
         foreach (var block in _blocks)
             copy._blocks.Add(block.Clone());
+        copy.RefreshConnections();
         return copy;
     }
 
@@ -213,6 +215,72 @@ public sealed class ModularShip
     /// <summary>总推力（存活推进器推力之和）。</summary>
     public float TotalThrust => GetThrusterMounts().Sum(m => m.Power);
 
+    public float TotalTorquerTorque => GetMainComponent().Where(b => b.Enabled).Sum(b => b.Spec.TorquerTorque);
+
+    /// <summary>各多边形自身惯量加平行轴项；单位与挂点的 r×F 一致。</summary>
+    public float MomentOfInertia()
+    {
+        var com = CenterOfMass();
+        var moment = 0.0f;
+        foreach (var block in _blocks.Where(b => b.Enabled))
+        {
+            var vertices = block.Spec.Vertices();
+            var area2 = 0.0f;
+            var integral = 0.0f;
+            for (var i = 0; i < vertices.Length; i++)
+            {
+                var a = vertices[i];
+                var b = vertices[(i + 1) % vertices.Length];
+                var cross = a.Cross(b);
+                area2 += cross;
+                integral += cross * (a.Dot(a) + a.Dot(b) + b.Dot(b));
+            }
+            var own = Mathf.Abs(area2) > 0.0001f ? integral / (6.0f * area2) : 0.0f;
+            moment += block.Spec.Mass * (own + block.Position.DistanceSquaredTo(com));
+        }
+        return Mathf.Max(1.0f, moment);
+    }
+
+    /// <summary>凸多边形 SAT：共边允许接触，实际重叠则拒绝。渲染、命中、吸附共用顶点。</summary>
+    public bool CanPlace(string shapeId, Vector2 position, float angle, Block? ignore = null)
+    {
+        var candidate = ShipShapeLibrary.Get(shapeId).Vertices().Select(v => position + v.Rotated(angle)).ToArray();
+        foreach (var other in _blocks.Where(b => b.Enabled && b != ignore))
+        {
+            var polygon = other.Spec.Vertices().Select(v => other.Position + v.Rotated(other.Angle)).ToArray();
+            if (Overlaps(candidate, polygon)) return false;
+        }
+        return true;
+    }
+
+    private static bool Overlaps(Vector2[] a, Vector2[] b)
+    {
+        foreach (var polygon in new[] { a, b })
+        {
+            for (var i = 0; i < polygon.Length; i++)
+            {
+                var edge = polygon[(i + 1) % polygon.Length] - polygon[i];
+                var axis = new Vector2(-edge.Y, edge.X).Normalized();
+                var aMin = a.Min(p => p.Dot(axis));
+                var aMax = a.Max(p => p.Dot(axis));
+                var bMin = b.Min(p => p.Dot(axis));
+                var bMax = b.Max(p => p.Dot(axis));
+                if (Mathf.Min(aMax, bMax) - Mathf.Max(aMin, bMin) <= 0.01f) return false;
+            }
+        }
+        return true;
+    }
+
+    public void Restore(ModularShip source)
+    {
+        var copies = source._blocks.Select(b => b.Clone()).ToArray();
+        _blocks.Clear();
+        _blocks.AddRange(copies);
+        _nextId = source._nextId;
+        RefreshConnections();
+        Changed?.Invoke();
+    }
+
     /// <summary>
     /// 计算方块 a 的端口 p 与方块 b 的端口 q 连接后，a 应放置的世界位置与朝向。
     /// 返回 a 的世界坐标与角度，使 a 的端口 p 与 b 的端口 q 重合且法线相反。
@@ -267,7 +335,7 @@ public sealed class ModularShip
                 var normalA = portA.WorldNormal(a.Angle);
                 var normalB = portB.WorldNormal(b.Angle);
                 if (posA.DistanceTo(posB) <= tolerance &&
-                    portA.Type == portB.Type && normalA.Dot(normalB) <= -0.94f)
+                    portA.CanConnect(portB) && normalA.Dot(normalB) <= -0.999f)
                     return true;
             }
         }
@@ -415,16 +483,15 @@ public sealed class ModularShip
         _blocks.Clear();
         _nextId = 1;
         var core = AddBlock("core", Vector2.Zero, 0.0f);
-        // 主体：核心四个方向接装甲骨架。
-        var hullUp = AttachTo(core, 4, "hull", 1);     // 核心上端口(270°) ↔ hull 左下端口(135°)
-        var hullDown = AttachTo(core, 1, "hull", 1);   // 核心下端口(90°)
-        var hullRight = AttachTo(core, 5, "hull", 1);  // 核心右上端口(330°)
-        // 推进器：核心左下/左上端口接推进器左下端口。
-        AttachTo(core, 2, "thruster", 1);
-        AttachTo(core, 3, "thruster", 1);
-        // 武器与能源：接在右侧装甲骨架的远端端口上。
-        AttachTo(hullRight, 0, "laser", 2);
-        AttachTo(hullDown, 0, "reactor", 2);
+        var stern = AttachTo(core, 5, "hull", 0);
+        var upper = AttachTo(stern, 3, "hull", 1);
+        var lower = AttachTo(stern, 1, "hull", 3);
+        var bow = AttachTo(core, 2, "hull", 2);
+        // 引擎仅用安装面 (+X) 连接；尾部两台同向，差动产生相反的转向力矩。
+        AttachTo(upper, 2, "thruster", 0);
+        AttachTo(lower, 2, "thruster", 0);
+        AttachTo(bow, 0, "cannon", 2);
+        AttachTo(bow, 3, "gyro", 1);
         Changed?.Invoke();
     }
 

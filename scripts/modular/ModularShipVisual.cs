@@ -76,16 +76,8 @@ public static class ModularShipVisual
             }
             else if (spec.IsThruster)
             {
-                // 推进器：喷口在推力反方向（-ThrustDirection），火焰朝喷口外喷。
-                var thrustDir = spec.ThrustDirection.Rotated(angle);
                 var activity = thrusterActivity is not null && thrusterActivity.TryGetValue(block.Id, out var a) ? a : 0.0f;
-                var nozzle = center - thrustDir * spec.Radius * 0.55f;
-                canvas.DrawCircle(nozzle, 3.5f + activity * 1.5f, new Color(0.81f, 0.48f, 1.0f, 0.5f + activity * 0.4f));
-                if (activity > 0.02f)
-                {
-                    var flameLength = spec.Radius * 0.5f + activity * spec.Radius * 0.9f;
-                    canvas.DrawLine(nozzle, nozzle - thrustDir * flameLength, new Color("#f2cc60", 0.4f + activity * 0.5f), 3.0f);
-                }
+                DrawEngine(canvas, spec, center, angle, activity);
             }
             else if (spec.IsWeapon)
             {
@@ -111,10 +103,39 @@ public static class ModularShipVisual
                     continue;
                 foreach (var port in block.Spec.Ports)
                 {
+                    if (!port.CanAttach) continue;
                     var world = worldPos + (block.Position - com).Rotated(heading) + port.LocalPosition.Rotated(block.Angle + heading);
                     canvas.DrawCircle(world, 2.5f, new Color("#7bb7e8", 0.6f));
                 }
             }
         }
+    }
+
+    /// <summary>编辑器与飞行共用喷口几何；宽度取真实的后边，排气沿局部 -X。</summary>
+    public static void DrawEngine(CanvasItem canvas, ShipShapeLibrary.ShapeSpec spec,
+        Vector2 center, float angle, float activity = 0)
+    {
+        Vector2 At(Vector2 point) => center + point.Rotated(angle);
+        var nozzle = spec.ExhaustPosition;
+        var width = spec.ExhaustHalfWidth * 0.82f;
+        var mouthTop = nozzle + Vector2.Up * width;
+        var mouthBottom = nozzle + Vector2.Down * width;
+        canvas.DrawLine(At(mouthTop), At(mouthBottom), new Color("#95aeac"), 2.2f, true);
+        // 内部收缩的喷管使短梯形引擎在缩小时也能读出前后方向。
+        var throat = new Vector2(-nozzle.X * 0.45f, 0);
+        canvas.DrawLine(At(mouthTop), At(throat + Vector2.Up * width * 0.35f), new Color("#75ceac", 0.65f), 1.2f, true);
+        canvas.DrawLine(At(mouthBottom), At(throat + Vector2.Down * width * 0.35f), new Color("#75ceac", 0.65f), 1.2f, true);
+        if (activity <= 0.01f) return;
+        var length = spec.Radius * (0.55f + 1.5f * activity);
+        canvas.DrawColoredPolygon(new[]
+        {
+            At(mouthTop), At(nozzle + Vector2.Left * length), At(mouthBottom),
+        }, new Color("#75ceac", 0.3f + activity * 0.35f));
+        canvas.DrawColoredPolygon(new[]
+        {
+            At(nozzle + Vector2.Up * width * 0.4f),
+            At(nozzle + Vector2.Left * length * 0.65f),
+            At(nozzle + Vector2.Down * width * 0.4f),
+        }, new Color("#d7fff0", 0.8f));
     }
 }
