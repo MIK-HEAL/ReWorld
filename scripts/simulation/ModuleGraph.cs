@@ -284,6 +284,58 @@ public sealed class ModuleGraph
 
     public bool IsOperational(ModuleInstance module) => GetOperationalModuleIds().Contains(module.Id);
 
+    /// <summary>
+    /// 计算所有连通分量（对应 Reassembly 的 BlockCluster 子树切分）。
+    /// 只考虑 Enabled 的模块；通过 Links 边做 BFS。返回每个分量的模块列表，
+    /// 分量按是否包含 core 排序（含 core 的在前，作为"主体"）。
+    /// </summary>
+    public List<List<ModuleInstance>> GetConnectedComponents()
+    {
+        var enabled = Modules.Where(module => module.Enabled).ToList();
+        var adjacency = new Dictionary<int, List<int>>();
+        foreach (var module in enabled)
+            adjacency[module.Id] = new List<int>();
+        foreach (var link in Links)
+        {
+            if (adjacency.ContainsKey(link.FirstId) && adjacency.ContainsKey(link.SecondId))
+            {
+                adjacency[link.FirstId].Add(link.SecondId);
+                adjacency[link.SecondId].Add(link.FirstId);
+            }
+        }
+
+        var byId = enabled.ToDictionary(module => module.Id);
+        var visited = new HashSet<int>();
+        var components = new List<List<ModuleInstance>>();
+        foreach (var module in enabled)
+        {
+            if (visited.Contains(module.Id))
+                continue;
+            var component = new List<ModuleInstance>();
+            var queue = new Queue<int>();
+            queue.Enqueue(module.Id);
+            visited.Add(module.Id);
+            while (queue.Count > 0)
+            {
+                var current = queue.Dequeue();
+                component.Add(byId[current]);
+                foreach (var neighbor in adjacency[current])
+                {
+                    if (visited.Contains(neighbor))
+                        continue;
+                    visited.Add(neighbor);
+                    queue.Enqueue(neighbor);
+                }
+            }
+            components.Add(component);
+        }
+
+        // 含 core 的分量排最前（作为舰船主体），其余作为可分离碎片。
+        return components
+            .OrderByDescending(component => component.Any(module => module.Kind == "core"))
+            .ToList();
+    }
+
     public ModuleMetrics GetMetrics()
     {
         double mass = 0, generation = 0, consumption = 0, heat = 0, thrust = 0, damage = 0, cooling = 0, storage = 0, energyCapacity = 0, control = 0, hull = 0, shield = 0, signal = 0;

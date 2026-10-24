@@ -23,7 +23,9 @@ public partial class Main : Node2D
 
     private WorldState _world = null!;
     private SpaceTest _spaceTest = null!;
-    private string _mode = "builder";
+    private ShipBuilder _shipBuilder = null!;
+    private UniverseView _universe = null!;
+    private string _mode = "universe";
     // The game opens in orbit. Factory construction is a landed-planet activity,
     // so it is entered explicitly from the space route instead of being the shell
     // around the whole game.
@@ -72,6 +74,20 @@ public partial class Main : Node2D
         AddChild(_spaceHud);
         _spaceHud.Setup(_spaceTest);
 
+        // 模块化造舰页（Reassembly 式任意角度多边形 + 端口吸附）。默认隐藏。
+        _shipBuilder = new ShipBuilder();
+        AddChild(_shipBuilder);
+        _shipBuilder.Visible = false;
+
+        // 无限宇宙是默认入口，占据整屏。造舰/工厂/航线通过按键进入。
+        _universe = new UniverseView();
+        AddChild(_universe);
+        _universe.Visible = true;
+
+        // 启动进入宇宙：隐藏原有建造 UI。
+        _builderUi.Visible = false;
+        _spaceHud.Visible = false;
+
         SetProcess(true);
         QueueRedraw();
     }
@@ -84,6 +100,17 @@ public partial class Main : Node2D
 
     public override void _Process(double delta)
     {
+        // 宇宙探索：UniverseView 自己处理飞行/引力/渲染，这里不推进工厂时钟。
+        if (_mode == "universe")
+            return;
+
+        // 模块化造舰页：不推进工厂经济时钟，只让造舰编辑器运行。
+        if (_mode == "modular")
+        {
+            QueueRedraw();
+            return;
+        }
+
         // The world clock continues while a real expedition is active. Pause and
         // time scale therefore affect production, heat and combat consistently.
         var scaledDelta = Math.Min(delta, _mode == "builder" ? 0.25 : 0.05) * _world.TimeScale;
@@ -113,6 +140,30 @@ public partial class Main : Node2D
 
     public override void _UnhandledInput(InputEvent @event)
     {
+        // 宇宙探索：M 进模块化造舰，Tab/B 进原有航线/造舰。
+        if (_mode == "universe")
+        {
+            if (@event is InputEventKey ukey && ukey.Pressed && !ukey.Echo)
+            {
+                if (ukey.Keycode == Key.M)
+                    EnterShipBuilder();
+                else if (ukey.Keycode == Key.Tab || ukey.Keycode == Key.B)
+                    EnterBuilderFromUniverse();
+            }
+            return;
+        }
+
+        // 模块化造舰页：Esc 返回普通建造，其余输入交给 ShipBuilder。
+        if (_mode == "modular")
+        {
+            if (@event is InputEventKey modularKey && modularKey.Pressed && !modularKey.Echo &&
+                (modularKey.Keycode == Key.Escape || modularKey.Keycode == Key.M))
+            {
+                ExitShipBuilder();
+            }
+            return;
+        }
+
         if (_mode == "space")
         {
             if (_spaceTest.HandleInput(@event))
@@ -291,7 +342,12 @@ public partial class Main : Node2D
             }
             else if (key.Keycode == Key.Escape)
             {
-                _selectedGrid = null;
+                // Esc 返回无限宇宙（宇宙是默认入口）。
+                EnterUniverse();
+            }
+            else if (key.Keycode == Key.M)
+            {
+                EnterShipBuilder();
             }
             else if (TryGetModuleShortcut(key.Keycode, out var moduleIndex) && moduleIndex < ActiveModuleOrder.Count)
             {
@@ -346,7 +402,7 @@ public partial class Main : Node2D
 
     public override void _Draw()
     {
-        if (_mode == "space")
+        if (_mode == "space" || _mode == "modular" || _mode == "universe")
             return;
 
         DrawRect(new Rect2(Vector2.Zero, new Vector2(1280.0f, 720.0f)), UiTheme.BackgroundDeep);
@@ -635,6 +691,57 @@ public partial class Main : Node2D
         ? _world.MoveModule(from, to)
         : _world.MoveShipModule(from, to);
 
+
+    /// <summary>进入模块化造舰页（Reassembly 式任意角度多边形舰体）。</summary>
+    private void EnterShipBuilder()
+    {
+        _mode = "modular";
+        if (_builderUi is not null)
+            _builderUi.Visible = false;
+        if (_spaceHud is not null)
+            _spaceHud.Visible = false;
+        if (_shipBuilder is not null)
+            _shipBuilder.Visible = true;
+        _world.Log("进入模块化造舰：用任意角度多边形方块 + 端口吸附，拼出 Reassembly 式舰体。按 Esc 或 M 返回。");
+        QueueRedraw();
+    }
+
+    private void ExitShipBuilder()
+    {
+        EnterUniverse();
+    }
+
+    /// <summary>从无限宇宙进入原有航线/造舰界面。</summary>
+    private void EnterBuilderFromUniverse()
+    {
+        _mode = "builder";
+        _buildContext = BuildContext.Route;
+        if (_universe is not null)
+            _universe.Visible = false;
+        if (_shipBuilder is not null)
+            _shipBuilder.Visible = false;
+        if (_builderUi is not null)
+            _builderUi.Visible = true;
+        if (_spaceHud is not null)
+            _spaceHud.Visible = false;
+        QueueRedraw();
+        _builderUi?.Refresh();
+    }
+
+    /// <summary>返回无限宇宙（默认入口）。</summary>
+    private void EnterUniverse()
+    {
+        _mode = "universe";
+        if (_shipBuilder is not null)
+            _shipBuilder.Visible = false;
+        if (_builderUi is not null)
+            _builderUi.Visible = false;
+        if (_spaceHud is not null)
+            _spaceHud.Visible = false;
+        if (_universe is not null)
+            _universe.Visible = true;
+        QueueRedraw();
+    }
 
     private void EnterSpaceTest()
     {
