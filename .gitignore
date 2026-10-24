@@ -1,0 +1,10 @@
+.godot/
+tools/godot-mcp/node_modules/
+tools/godot-mcp/npm-debug.log*
+
+.mcp.json
+*.md
+.omo/
+
+.codegraph/
+tools/
