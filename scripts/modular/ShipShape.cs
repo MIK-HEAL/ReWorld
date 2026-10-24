@@ -44,6 +44,8 @@ public static partial class ShipShapeLibrary
     public enum PortType
     {
         Normal = 1,
+        WeaponOut = 2,
+        WeaponIn = 4,
         ThrusterOut = 8,
         ThrusterIn = 16,
     }
@@ -67,10 +69,7 @@ public static partial class ShipShapeLibrary
         public Vector2 WorldNormal(float blockAngle) =>
             Direction.Rotated(blockAngle);
 
-        /// <summary>
-        /// 原版 0x1401e3c10：按两个类型的 OR 查询兼容表，并非类型相等。
-        /// NORMAL+THRUSTER_IN 可安装，THRUSTER_OUT+THRUSTER_IN 可串联。
-        /// </summary>
+        /// <summary>原版 PortPair_type_compatibility：按端口类型 OR 查询兼容表。</summary>
         public bool CanConnect(Port other) => CanAttach && other.CanAttach &&
             (int)(Type | other.Type) is 1 or 6 or 17 or 24 or 33 or 129 or 160;
     }
@@ -191,7 +190,12 @@ public static partial class ShipShapeLibrary
         // —— 兼容旧 API ——
         public string ColorHex => $"#{ColorUint & 0xFFFFFF:X6}";
         public bool IsCore => (Features & BlockFeatures.Command) != 0;
-        public bool IsThruster => (Features & BlockFeatures.Thruster) != 0;
+        // The command block carries a native THRUSTER feature in TheBlocks.h,
+        // but it is not an editor-placeable engine. Keep that actuator available
+        // to flight physics through HasNativeThruster while leaving IsThruster
+        // reserved for detachable propulsion modules.
+        public bool IsThruster => (Features & BlockFeatures.Thruster) != 0 && !IsCore;
+        public bool HasNativeThruster => (Features & BlockFeatures.Thruster) != 0;
         public bool IsWeapon => (Features & BlockFeatures.Weapon) != 0;
 
         /// <summary>质量（影响引力与惯性）。</summary>
@@ -247,6 +251,8 @@ public static partial class ShipShapeLibrary
         public Vector2 BarrelOffset { get; init; }
         public float BarrelTaper { get; init; } = 1.0f;
         public bool HasGroundTruth { get; init; }
+        /// <summary>Whether vertices and ports are confirmed from exe shape evidence.</summary>
+        public bool HasVerifiedGeometry { get; init; }
 
         /// <summary>施力方向（本地 +X）；排气方向相反。</summary>
         public Vector2 ThrustDirection { get; init; } = Vector2.Right;
@@ -306,7 +312,7 @@ public static partial class ShipShapeLibrary
             // 复合装甲：保留 ReWorld 耐久调参。
             ["armor"] = MakeRegular("armor", 248, "复合装甲", "骨架", 0x8998A8,
                 BlockFeatures.None, 4, mass: 10.0f, hull: 70.0f),
-            // 源数据见 Reassembly/analysis/engine_geometry.json：梯形，不是矩形近似。
+            // 源数据见 data/reassembly/native_shape_geometry.json：梯形，不是矩形近似。
             ["thruster"] = MakeThruster("thruster", 202, "小型引擎", 2, 4.5f, 4.194999695f, 130, 20_000, 5, 25),
             ["thruster_medium"] = MakeThruster("thruster_medium", 203, "中型引擎", 3, 7.5f, 10, 150, 40_000, 8, 38),
             ["thruster_large"] = MakeThruster("thruster_large", 204, "大型引擎", 4, 10, 15, 150, 80_000, 12, 56),
@@ -396,7 +402,7 @@ public static partial class ShipShapeLibrary
         float mass = 5.0f, float hull = 20.0f,
         float thrust = 0.0f, float damage = 0.0f,
         Vector2? thrustDir = null, Vector2? weaponDir = null, float torquerTorque = 0.0f,
-        int nativeScale = 1, bool isRegistered = false)
+        int nativeScale = 1, bool isRegistered = false, bool referenceGeometry = false)
     {
         // 共用 10 个原版单位的边长（显示比例为 2），不能为每个功能随意指定半径。
         // 正方形、三角形、六边形因此具有相同接缝长度。
@@ -424,6 +430,7 @@ public static partial class ShipShapeLibrary
             VerticesField = vertices,
             Ports = PortsForSides(sides, circumradius, startAngle),
             Mass = mass,
+            HasVerifiedGeometry = referenceGeometry,
             Hull = hull,
             Thrust = thrust,
             Damage = damage,
@@ -448,62 +455,32 @@ public static partial class ShipShapeLibrary
         float baseLength, float legLength, float degrees, float thrust, float mass, float hull,
         bool isRegistered = false)
     {
-        var angle = Mathf.DegToRad(degrees);
-        var x = -Mathf.Sin(angle) * legLength;
-        var y = Mathf.Cos(angle) * legLength;
-        var center = new Vector2(x * 0.5f, baseLength * 0.5f);
-        var vertices = new[]
-        {
-            (Vector2.Zero - center) * DisplayScale,
-            (new Vector2(x, y) - center) * DisplayScale,
-            (new Vector2(x, baseLength - y) - center) * DisplayScale,
-            (new Vector2(0, baseLength) - center) * DisplayScale,
-        };
-        // shape 18 的跳转表选择 IN=16 / OUT=8（不是 WEAPON_OUT=2）。
-        // 尾口可接下一台引擎的前口；普通装甲不能堵住尾口。
-        var ports = new List<Port>
-        {
-            new((vertices[3] + vertices[0]) * 0.5f, Vector2.Right, PortType.ThrusterIn),
-            new((vertices[1] + vertices[2]) * 0.5f, Vector2.Left, PortType.ThrusterOut),
-        };
+        if (!NativeShapeGeometry.TryGet("THRUSTER_NOSTACK", scale, out var native))
+            throw new InvalidOperationException($"Missing native geometry for THRUSTER_NOSTACK scale {scale}");
         return new ShapeSpec
         {
             Id = id, NumId = numId, Label = label, Category = "机动", ColorUint = 0x0C4E61,
-            IsRegistered = isRegistered,
-            Features = BlockFeatures.Thruster, VerticesField = vertices, Ports = ports,
-            Radius = vertices.Max(v => v.Length()), Scale = scale, Sides = 4,
-            ExhaustPosition = (vertices[1] + vertices[2]) * 0.5f,
-            ExhaustHalfWidth = vertices[1].DistanceTo(vertices[2]) * 0.5f,
+            IsRegistered = isRegistered, Features = BlockFeatures.Thruster,
+            VerticesField = native.Vertices, Ports = native.Ports,
+            Radius = native.Vertices.Max(v => v.Length()), Scale = scale, Sides = native.Vertices.Length,
+            ExhaustPosition = native.Ports.Count > 1 ? native.Ports[1].Offset : Vector2.Zero,
+            ExhaustHalfWidth = native.Vertices.Length > 2 ? native.Vertices[1].DistanceTo(native.Vertices[2]) * 0.5f : 0,
             Mass = mass, Hull = hull, Thrust = thrust, ThrustDirection = Vector2.Right,
+            HasVerifiedGeometry = native.Verified,
         };
     }
 
     private static ShapeSpec MakeCommand(bool isRegistered = false)
     {
-        // shape 8, scale 1: h=5, bevel=10*(sqrt(2)-1)/2.
-        var h = 5.0f * DisplayScale;
-        var bevel = (Mathf.Sqrt(2) - 1) * h;
-        var raw = new[]
-        {
-            new Vector2(-h, h), new Vector2(bevel, h), new Vector2(h, bevel),
-            new Vector2(h, -bevel), new Vector2(bevel, -h), new Vector2(-h, -h),
-        };
-        var mean = raw.Aggregate(Vector2.Zero, (sum, v) => sum + v) / raw.Length;
-        var vertices = raw.Select(v => v - mean).ToArray();
-        var ports = new List<Port>();
-        for (var i = 0; i < vertices.Length; i++)
-        {
-            var a = vertices[i];
-            var b = vertices[(i + 1) % vertices.Length];
-            var edge = b - a;
-            ports.Add(new Port((a + b) * 0.5f, new Vector2(-edge.Y, edge.X).Normalized()));
-        }
+        if (!NativeShapeGeometry.TryGet("COMMAND", 1, out var native))
+            throw new InvalidOperationException("Missing native geometry for COMMAND");
         return new ShapeSpec
         {
             Id = "core", NumId = 200, Label = "舰船核心", Category = "核心", ColorUint = 0x069A95,
             IsRegistered = isRegistered,
-            Features = BlockFeatures.Command, VerticesField = vertices, Ports = ports,
-            Radius = vertices.Max(v => v.Length()), Sides = vertices.Length, Mass = 12, Hull = 60,
+            Features = BlockFeatures.Command, VerticesField = native.Vertices, Ports = native.Ports,
+            Radius = native.Vertices.Max(v => v.Length()), Sides = native.Vertices.Length, Mass = 12, Hull = 60,
+            HasVerifiedGeometry = native.Verified,
         };
     }
 
@@ -517,4 +494,21 @@ public static partial class ShipShapeLibrary
         .ThenBy(spec => spec.NumId)
         .Select(spec => spec.Id)
         .ToArray();
+
+    /// <summary>
+    /// Internal compatibility names used by saved ReWorld fixtures. They are
+    /// deliberately excluded from BuildOrder so the old guessed modules never
+    /// reappear in the player catalogue; imported blueprints/tests can still
+    /// resolve the three legacy engine aliases while migrating to IDs 53/54.
+    /// </summary>
+    public static bool IsLegacyAlias(string id) => id is "thruster" or "thruster_medium" or "thruster_large";
+
+    /// <summary>旧蓝图/测试夹具的引擎名称只作为迁移入口，不创建第二份科技记录。</summary>
+    public static string CanonicalTechnologyId(string id) => id switch
+    {
+        "thruster" => "ra_60",
+        "thruster_medium" => "ra_54",
+        "thruster_large" => "ra_53",
+        _ => id,
+    };
 }

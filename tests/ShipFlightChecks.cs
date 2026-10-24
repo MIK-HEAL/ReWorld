@@ -119,6 +119,10 @@ public partial class ShipFlightChecks : Node
         var forward = pilot.Evaluate(ship, pilot.Resolve(new(1, 0, 0), 0, Vector2.Right), Vector2.Zero, 0, activity);
         Check(forward.LocalForce.X > 10000 && Mathf.Abs(forward.LocalForce.Y) < 0.01f && Mathf.Abs(forward.Torque) < 10,
             "Straight flight shares the two rear engines without unwanted yaw");
+        var recomputedTorque = ship.GetThrusterMounts().Sum(mount =>
+            mount.Offset.Cross(mount.Force) * mount.Power * ShipPropulsion.ForceScale * activity[mount.BlockId]);
+        Check(Mathf.Abs(recomputedTorque) < 0.01f && Mathf.Abs(forward.Torque - recomputedTorque) < 0.01f,
+            $"Straight thrust has zero torque when independently recomputed from active mounts (reported={forward.Torque}, actual={recomputedTorque})");
         var reverse = pilot.Evaluate(ship, pilot.Resolve(new(-1, 0, 0), 0, Vector2.Right), Vector2.Zero, 0, activity);
         Check(reverse.ActiveCount == 0 && reverse.LocalForce.IsZeroApprox(), "Rear-only engines cannot invent reverse thrust");
         var strafe = pilot.Evaluate(ship, pilot.Resolve(new(0, 1, 0), 0, Vector2.Right), Vector2.Zero, 0, activity);
@@ -137,9 +141,9 @@ public partial class ShipFlightChecks : Node
         var gyro = pilot.Evaluate(ship, pilot.Resolve(default, 0, Vector2.Down), Vector2.Zero, 0, activity);
         Check(gyro.Torque > 0 && gyro.LocalForce.IsZeroApprox(), "Torquer turns without invented linear thrust");
         foreach (var block in ship.Blocks.Where(b => !b.Spec.IsCore)) block.Enabled = false;
-        var inert = pilot.Evaluate(ship, pilot.Resolve(new(1, 0, 0), 0, Vector2.Down), Vector2.Zero, 1, activity);
-        Check(inert.Torque == 0 && inert.LocalForce.IsZeroApprox() && activity.Count == 0,
-            "Missing thrusters and torquers remove propulsion and steering authority");
+        var inert = pilot.Evaluate(ship, default, Vector2.Zero, 0, activity);
+        Check(inert.Torque == 0 && inert.LocalForce.IsZeroApprox() && activity.Values.All(level => level == 0),
+            "With detached modules disabled and no control input, native core actuators remain idle");
         ship.Core!.Enabled = false;
         Check(pilot.Evaluate(ship, default, Vector2.Zero, 0, activity) == default, "No live core means no control");
 
@@ -312,8 +316,6 @@ public partial class ShipFlightChecks : Node
         watch.Restart();
         for (var i = 0; i < 30; i++) pilot.Evaluate(large, command, Vector2.Zero, 0, activity);
         var uncachedMilliseconds = watch.Elapsed.TotalMilliseconds / 30;
-        GD.Print($"FLIGHT_PROFILE_BENCHMARK: {large.Blocks.Count} blocks, rebuild={uncachedMilliseconds:F3} ms/step, " +
-            $"cached={cachedMilliseconds:F3} ms/step, cached allocations={cachedBytes} bytes/600 steps");
 
         var view = new UniverseView();
         view.SetShip(large);
@@ -327,18 +329,17 @@ public partial class ShipFlightChecks : Node
         var physicsMilliseconds = watch.Elapsed.TotalMilliseconds / 300;
         var physicsBytes = GC.GetAllocatedBytesForCurrentThread() - allocated;
         Check(physicsBytes < 16384, $"Complete physics ticks do not rebuild topology or allocate solver arrays ({physicsBytes} bytes/300 ticks)");
-        GD.Print($"FLIGHT_PHYSICS_BENCHMARK: {physicsMilliseconds:F3} ms/tick, {physicsBytes} bytes/300 ticks");
         var reflectedProfile = typeof(UniverseView).GetField("_flightProfile",
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
         foreach (var block in large.Blocks.Where(b => b.Spec.IsThruster)) block.Enabled = false;
         view._PhysicsProcess(1.0 / 60);
         var refreshed = (ShipFlightController.FlightProfile)reflectedProfile.GetValue(view)!;
-        Check(refreshed.Revision == large.Revision && refreshed.Mounts.Count == 0,
-            "Running flight automatically refreshes disabled engines");
+        Check(refreshed.Revision == large.Revision && refreshed.Mounts.Count == 1 && refreshed.Mounts[0].BlockId == large.Core!.Id,
+            "Running flight refreshes disabled external engines while retaining the native core actuator");
         var added = large.AddBlock("thruster", Vector2.One * 50000, 0);
         view._PhysicsProcess(1.0 / 60);
         refreshed = (ShipFlightController.FlightProfile)reflectedProfile.GetValue(view)!;
-        Check(refreshed.Revision == large.Revision && refreshed.Mounts.Count == 0,
+        Check(refreshed.Revision == large.Revision && refreshed.Mounts.Count == 1,
             "A disconnected added engine updates mass without inventing connected thrust");
         large.RemoveBlock(added);
         view._PhysicsProcess(1.0 / 60);

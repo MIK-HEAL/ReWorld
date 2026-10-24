@@ -65,6 +65,16 @@ public partial class ModularShipChecks : Node
         Check(!small.Ports[1].CanConnect(ShipShapeLibrary.Get("hull").Ports[0]), "Exhaust must not accept hull connections");
         Check(small.Ports[0].Type == ShipShapeLibrary.PortType.ThrusterIn &&
             small.Ports[1].Type == ShipShapeLibrary.PortType.ThrusterOut, "Native shape 18 port types are IN=16 / OUT=8");
+        foreach (var native in new[] { "DISH_THRUSTER", "RIGHT_TRI", "RIGHT_TRI2L", "RIGHT_TRI2R", "ADAPTER",
+                                       "CANNON", "RECT_LAUNCHER", "MISSILE" })
+            Check(ShipShapeLibrary.Shapes.Values.Where(spec => spec.NativeShapeName == native)
+                .All(spec => spec.HasVerifiedGeometry && spec.Ports.Count > 0),
+                $"{native} geometry and ports come from native evidence data");
+        Check(new ShipShapeLibrary.Port(Vector2.Zero, Vector2.Right, ShipShapeLibrary.PortType.WeaponOut)
+                .CanConnect(new ShipShapeLibrary.Port(Vector2.Zero, Vector2.Left, ShipShapeLibrary.PortType.WeaponIn)) &&
+            !new ShipShapeLibrary.Port(Vector2.Zero, Vector2.Right, ShipShapeLibrary.PortType.Normal)
+                .CanConnect(new ShipShapeLibrary.Port(Vector2.Zero, Vector2.Left, ShipShapeLibrary.PortType.WeaponIn)),
+            "Weapon port compatibility follows the native IN/OUT table");
     }
 
     private void Assembly()

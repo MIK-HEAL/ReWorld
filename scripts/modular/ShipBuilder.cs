@@ -47,6 +47,9 @@ public partial class ShipBuilder : Node2D
 
     private ModularShip.Block? _draggingBlock;
     private Vector2 _dragGrabOffset;
+    private Vector2 _dragStartScreen;
+    private bool _dragMoved;
+    private int _dragBlockId = -1;
     private ModularShip? _dragBefore;
     private ModularShip.Block? _selection;
     private readonly Stack<ModularShip> _undo = new();
@@ -73,14 +76,15 @@ public partial class ShipBuilder : Node2D
     public PlayerProgress Progress { get; set; } = new();
     private int _catalogPage;
     private string _catalogCategory = "全部";
-    private string _technologyNotice = "未解密模块请按 U 前往升级界面";
+    private string _technologyNotice = "研究锁定 · 按 U 在升级界面解锁";
     private const int PageSize = 28;
     private readonly List<(Rect2 Rect, string Category)> _categoryButtons = new();
     private string[] FilteredCatalog() => ShipShapeLibrary.BuildOrder.Where(id => _catalogCategory == "全部" ||
         ShipShapeLibrary.Get(id).Category == _catalogCategory).ToArray();
     public void SelectShape(string shapeId)
     {
-        if (!ShipShapeLibrary.BuildOrder.Contains(shapeId)) return;
+        if (!ShipShapeLibrary.BuildOrder.Contains(shapeId) &&
+            !(ShipShapeLibrary.IsLegacyAlias(shapeId) && ShipShapeLibrary.Shapes.ContainsKey(shapeId))) return;
         _selectedShapeId = shapeId;
         _selection = null;
     }
@@ -90,6 +94,8 @@ public partial class ShipBuilder : Node2D
     {
         if (_dragBefore is not null) _ship.Restore(_dragBefore);
         _draggingBlock = null;
+        _dragMoved = false;
+        _dragBlockId = -1;
         _dragBefore = null;
         _selection = null;
         _dragGrabOffset = Vector2.Zero;
@@ -275,6 +281,9 @@ public partial class ShipBuilder : Node2D
         }
     }
 
+    private ModularShip.Block? FindBlockById(int id)
+        => id < 0 ? null : _ship.Blocks.FirstOrDefault(block => block.Id == id);
+
     private void ScaleEngine(int direction)
     {
         var sizes = new[] { "ra_60", "ra_54", "ra_53" };
@@ -314,11 +323,22 @@ public partial class ShipBuilder : Node2D
             {
                 if (mouse.ButtonIndex == MouseButton.Left && _draggingBlock is not null)
                 {
+                    var wasMoved = _dragMoved;
+                    var draggedId = _dragBlockId;
                     UpdateHover();
-                    if (_snapPreview is not { Valid: true } && _dragBefore is not null)
+                    if (!wasMoved)
+                    {
+                        // A press/release without pointer travel is a selection,
+                        // not a failed drag. Restore the exact snapshot because
+                        // UpdateHover may have evaluated a nearby snap target.
+                        if (_dragBefore is not null)
+                            _ship.Restore(_dragBefore);
+                        _selection = FindBlockById(draggedId);
+                    }
+                    else if (_snapPreview is not { Valid: true } && _dragBefore is not null)
                     {
                         _ship.Restore(_dragBefore);
-                        _selection = null;
+                        _selection = FindBlockById(draggedId);
                     }
                     else if (_dragBefore is not null)
                     {
@@ -326,6 +346,8 @@ public partial class ShipBuilder : Node2D
                         _redo.Clear();
                     }
                     _draggingBlock = null;
+                    _dragMoved = false;
+                    _dragBlockId = -1;
                     _dragBefore = null;
                     _dragGrabOffset = Vector2.Zero;
                     _ship.RefreshConnections();
@@ -343,6 +365,7 @@ public partial class ShipBuilder : Node2D
             }
             if (mouse.ButtonIndex == MouseButton.Right)
             {
+                _selection ??= BlockAt(_mouseWorld);
                 RotateSelection(Mathf.Pi * 0.5f);
                 return;
             }
@@ -368,6 +391,9 @@ public partial class ShipBuilder : Node2D
                 }
                 _selection = _draggingBlock = clicked;
                 _dragGrabOffset = clicked.Position - ScreenToWorld(mouse.Position);
+                _dragStartScreen = mouse.Position;
+                _dragMoved = false;
+                _dragBlockId = clicked.Id;
                 _previewAngle = clicked.Angle;
                 return;
             }
@@ -378,7 +404,12 @@ public partial class ShipBuilder : Node2D
         {
             _pointerScreen = motion.Position;
             if (_cameraDragging) _cameraPosition -= motion.Relative / _cameraZoom;
-            if (_draggingBlock is not null) UpdateHover();
+            if (_draggingBlock is not null)
+            {
+                if (motion.Position.DistanceTo(_dragStartScreen) > 3.0f)
+                    _dragMoved = true;
+                UpdateHover();
+            }
             return;
         }
         if (@event is not InputEventKey key || !key.Pressed || key.Echo) return;
@@ -428,7 +459,7 @@ public partial class ShipBuilder : Node2D
 
     private void PlacePreview()
     {
-        if (!Progress.CanBuild(_selectedShapeId)) { _technologyNotice = "此模块尚未解密 · 按 U 查看升级"; return; }
+        if (!Progress.CanBuild(_selectedShapeId)) { _technologyNotice = "研究锁定 · 按 U 在升级界面解锁"; return; }
         if (_snapPreview is not { Valid: true } snap) return;
         SaveUndo();
         _selection = _ship.AddBlock(_selectedShapeId, snap.Position, snap.Angle);
@@ -710,7 +741,7 @@ public partial class ShipBuilder : Node2D
         DrawString(_font, new Vector2(PaletteX + 100, 594), $"{_catalogPage + 1}/{Math.Max(1, (catalog.Length + PageSize - 1) / PageSize)}", fontSize: 12, modulate: MutedText);
         DrawString(_font, new Vector2(PaletteX + 224, 594), "下页 >", fontSize: 12, modulate: Telemetry);
         var selectedSpec = ShipShapeLibrary.Get(_selectedShapeId);
-        DrawString(_font, new Vector2(PaletteX + 16, 624), Progress.CanBuild(_selectedShapeId) ? "已解密" : "模块规格已加密 · 按 U 查看升级", fontSize: 12, modulate: Progress.CanBuild(_selectedShapeId) ? Telemetry : MutedText);
+        DrawString(_font, new Vector2(PaletteX + 16, 624), Progress.CanBuild(_selectedShapeId) ? "已解密" : "研究锁定 · 按 U 在升级界面解锁", fontSize: 12, modulate: Progress.CanBuild(_selectedShapeId) ? Telemetry : MutedText);
         DrawString(_font, new Vector2(PaletteX + 16, 644), _technologyNotice, fontSize: 10, modulate: MutedText);
 
         var statsY = ViewHeight - 64.0f;

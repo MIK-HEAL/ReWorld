@@ -216,12 +216,16 @@ public sealed partial class ModularShip
         var mounts = new List<ThrusterMount>();
         foreach (var block in _blocks)
         {
-            if (!block.Enabled || !block.Spec.IsThruster)
+            if (!block.Enabled || !block.Spec.HasNativeThruster)
                 continue;
             if (!mainComponent.Contains(block))
                 continue;
             var force = block.Spec.ThrustDirection.Rotated(block.Angle);
-            mounts.Add(new ThrusterMount(block.Id, block.Position - com, force, block.Spec.Thrust));
+            // The native command actuator is centered on the command body in
+            // Reassembly and does not introduce a spurious yaw moment when the
+            // current ship's mass centroid is offset by attached modules.
+            var offset = block.Spec.IsCore ? Vector2.Zero : block.Position - com;
+            mounts.Add(new ThrusterMount(block.Id, offset, force, block.Spec.Thrust));
         }
         return mounts;
     }

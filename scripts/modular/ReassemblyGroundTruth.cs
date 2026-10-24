@@ -107,7 +107,10 @@ public static partial class ShipShapeLibrary
                 Description = description,
                 SourceFaction = 20,
                 NativeShape = 0,
-                ReferenceGeometry = true,
+                // blocks.lua confirms module attributes, not the native shape
+                // vertices. Keep this flag tied to executable geometry evidence.
+                ReferenceGeometry = geometry.HasVerifiedGeometry,
+                HasVerifiedGeometry = geometry.HasVerifiedGeometry,
                 IsRegistered = true,
                 WeaponKind = weaponKind,
                 Range = range > 0 ? range : 1000,
@@ -151,62 +154,28 @@ public static partial class ShipShapeLibrary
         uint color, BlockFeatures features, int scale, float thrust)
     {
         var normalized = nativeShape.ToUpperInvariant();
-        if (normalized is "COMMAND")
-            return MakeCommand(isRegistered: true);
-        if (normalized is "THRUSTER_NOSTACK" or "DISH_THRUSTER")
-            return MakeThruster(id, numId, name, scale, scale <= 1 ? 4 : scale == 2 ? 4.5f : 7.5f,
-                scale <= 1 ? 4 : scale == 2 ? 4.2f : 10, 140, thrust, 5, 25, isRegistered: true);
-
-        if (normalized == "OCTAGON")
-            return MakeRegular(id, numId, name, CategoryFor(features), color, features, 8,
-                nativeScale: scale, isRegistered: true);
-
-        var half = 5.0f * DisplayScale * scale;
-        var vertices = normalized switch
-        {
-            "RIGHT_TRI" => new[] { new Vector2(-half, -half), new Vector2(half, half), new Vector2(-half, half) },
-            "RIGHT_TRI2L" => new[] { new Vector2(-half, -half), new Vector2(half, -half), new Vector2(-half, 0) },
-            "RIGHT_TRI2R" => new[] { new Vector2(-half, -half), new Vector2(half, -half), new Vector2(half, 0) },
-            "ADAPTER" => new[] { new Vector2(-half, -half), new Vector2(half * 0.35f, -half),
-                new Vector2(half, 0), new Vector2(half * 0.35f, half), new Vector2(-half, half) },
-            "CANNON" => new[] { new Vector2(-half, -half * 0.62f), new Vector2(half * 0.1f, -half * 0.62f),
-                new Vector2(half, -half * 0.28f), new Vector2(half, half * 0.28f),
-                new Vector2(half * 0.1f, half * 0.62f), new Vector2(-half, half * 0.62f) },
-            "RECT_LAUNCHER" => new[] { new Vector2(-half, -half), new Vector2(half * 0.3f, -half),
-                new Vector2(half, -half * 0.55f), new Vector2(half, half * 0.55f),
-                new Vector2(half * 0.3f, half), new Vector2(-half, half) },
-            "MISSILE" => new[] { new Vector2(-half, -half * 0.38f), new Vector2(half * 0.5f, -half * 0.38f),
-                new Vector2(half, 0), new Vector2(half * 0.5f, half * 0.38f), new Vector2(-half, half * 0.38f) },
-            _ => new[] { new Vector2(-half, -half), new Vector2(half, -half),
-                new Vector2(half, half), new Vector2(-half, half) },
-        };
-        return MakePolygon(id, numId, name, nativeShape, color, features, scale, vertices, thrust);
+        if (normalized.Length == 0) normalized = "RECT";
+        if (normalized == "SQUARE") normalized = "RECT";
+        if (!NativeShapeGeometry.TryGet(normalized, scale, out var native))
+            throw new InvalidOperationException($"Missing native geometry for shape {normalized} scale {scale} in data/reassembly/native_shape_geometry.json");
+        return MakePolygon(id, numId, name, normalized, color, features, scale,
+            native.Vertices, native.Ports, thrust, native.Verified);
     }
 
     private static ShapeSpec MakePolygon(string id, int numId, string name, string nativeShape, uint color,
-        BlockFeatures features, int scale, Vector2[] vertices, float thrust)
+        BlockFeatures features, int scale, Vector2[] vertices, List<Port> ports, float thrust, bool verified)
     {
         var centroid = vertices.Aggregate(Vector2.Zero, (sum, vertex) => sum + vertex) / vertices.Length;
         vertices = vertices.Select(vertex => vertex - centroid).ToArray();
-        var signedArea = 0.0f;
-        for (var i = 0; i < vertices.Length; i++) signedArea += vertices[i].Cross(vertices[(i + 1) % vertices.Length]);
-        var ports = new List<Port>(vertices.Length);
-        for (var i = 0; i < vertices.Length; i++)
-        {
-            var a = vertices[i];
-            var b = vertices[(i + 1) % vertices.Length];
-            var edge = b - a;
-            var normal = signedArea >= 0 ? new Vector2(edge.Y, -edge.X) : new Vector2(-edge.Y, edge.X);
-            ports.Add(new Port((a + b) * 0.5f, normal.Normalized()));
-        }
+        var translatedPorts = ports.Select(port => port with { Offset = port.Offset - centroid }).ToList();
         return new ShapeSpec
         {
             Id = id, NumId = numId, Label = name, Category = CategoryFor(features), ColorUint = color,
             IsRegistered = true,
             Features = features, NativeShapeName = nativeShape, Scale = scale, Sides = vertices.Length,
-            VerticesField = vertices, Ports = ports, Radius = vertices.Max(v => v.Length()),
+            VerticesField = vertices, Ports = translatedPorts, Radius = vertices.Max(v => v.Length()),
             Mass = 5 * scale, Hull = 20 * scale, Thrust = thrust,
-            WeaponDirection = Vector2.Right, ThrustDirection = Vector2.Right,
+            WeaponDirection = Vector2.Right, ThrustDirection = Vector2.Right, HasVerifiedGeometry = verified,
         };
     }
 

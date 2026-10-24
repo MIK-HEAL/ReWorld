@@ -87,7 +87,30 @@ public static class ModularShipVisual
         }
         canvas.DrawColoredPolygon(vertices, fill);
         canvas.DrawPolyline(vertices.Append(vertices[0]).ToArray(), line, 1.0f);
-        if (!encrypted && spec.Shrouds.Count > 0) DrawShrouds(canvas, spec, center, 0, scale);
+        if (encrypted)
+        {
+            // Reassembly's unavailable technology is still recognizable by its
+            // silhouette. Use a restrained research overlay instead of a large
+            // lock glyph: diagonal scan bands plus a small acquisition reticle.
+            var bounds = vertices.Aggregate(new Rect2(vertices[0], Vector2.Zero),
+                (rect, point) => rect.Expand(point));
+            var hatch = new Color("#8ab7c8", 0.32f);
+            var step = Mathf.Max(3.0f, targetRadius * 0.34f);
+            for (var y = bounds.Position.Y - bounds.Size.X; y < bounds.End.Y + bounds.Size.X; y += step)
+            {
+                var start = new Vector2(bounds.Position.X, y);
+                var end = new Vector2(bounds.End.X, y + bounds.Size.X);
+                canvas.DrawLine(start, end, hatch, Mathf.Max(0.6f, targetRadius * 0.045f));
+            }
+            var reticle = new Color("#b4d9df", 0.62f);
+            var arm = Mathf.Max(2.0f, targetRadius * 0.22f);
+            var gap = Mathf.Max(1.0f, targetRadius * 0.12f);
+            canvas.DrawLine(center + new Vector2(-arm, 0), center + new Vector2(-gap, 0), reticle, 0.8f);
+            canvas.DrawLine(center + new Vector2(gap, 0), center + new Vector2(arm, 0), reticle, 0.8f);
+            canvas.DrawLine(center + new Vector2(0, -arm), center + new Vector2(0, -gap), reticle, 0.8f);
+            canvas.DrawLine(center + new Vector2(0, gap), center + new Vector2(0, arm), reticle, 0.8f);
+        }
+        else if (spec.Shrouds.Count > 0) DrawShrouds(canvas, spec, center, 0, scale);
     }
 
     /// <summary>绘制整艘舰体到当前 CanvasItem 画布（须已设置好世界变换）。</summary>
@@ -136,7 +159,7 @@ public static class ModularShipVisual
             var lineColor = spec.LineColor;
             canvas.DrawPolyline(item.Outline, lineColor, 1.0f);
 
-            if (spec.IsThruster)
+            if (spec.HasNativeThruster)
             {
                 var activity = thrusterActivity is not null && thrusterActivity.TryGetValue(block.Id, out var a) ? a : 0.0f;
                 DrawEngine(canvas, spec, center, angle, activity, item.Flame, item.FlameCore);

@@ -19,14 +19,19 @@ public sealed class PlayerProgress
     public event Action? Changed;
     public bool Autosave { get; set; }
     private const string SavePath = "user://reworld_campaign.json";
-    public bool CanBuild(string id) => ShipShapeLibrary.BuildOrder.Contains(id) &&
-        ShipShapeLibrary.Shapes.TryGetValue(id, out var spec) && Unlocked.Contains(spec.NumId);
+    public bool CanBuild(string id)
+    {
+        var canonical = ShipShapeLibrary.CanonicalTechnologyId(id);
+        return ShipShapeLibrary.BuildOrder.Contains(canonical) &&
+            ShipShapeLibrary.Shapes.TryGetValue(canonical, out var spec) && Unlocked.Contains(spec.NumId);
+    }
     public static int UnlockCost(ShipShapeLibrary.ShapeSpec spec)
         => Math.Max(40, (int)(spec.Mass * 8 + (spec.IsWeapon ? spec.Damage * 5 : 0)
             + ((spec.Features & (BlockFeatures.Shield | BlockFeatures.Factory)) != 0 ? 200 : 0)));
     public bool TryUnlock(string id)
     {
-        if (!ShipShapeLibrary.BuildOrder.Contains(id) || !ShipShapeLibrary.Shapes.TryGetValue(id, out var spec)) return false;
+        var canonical = ShipShapeLibrary.CanonicalTechnologyId(id);
+        if (!ShipShapeLibrary.BuildOrder.Contains(canonical) || !ShipShapeLibrary.Shapes.TryGetValue(canonical, out var spec)) return false;
         if (Unlocked.Contains(spec.NumId)) return true;
         var cost = UnlockCost(spec);
         if (Resources < cost) return false;

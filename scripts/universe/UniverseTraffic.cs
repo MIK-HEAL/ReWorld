@@ -39,7 +39,12 @@ public sealed class UniverseTraffic
     }
     private static ModularShip.Block Attach(ModularShip ship, ModularShip.Block host, int port, string shape, int self)
     {
-        var snap = ModularShip.SnapBlock(ShipShapeLibrary.Get(shape).Ports[self], host.Spec.Ports[port], host.Position, host.Angle);
+        var selfPorts = ShipShapeLibrary.Get(shape).Ports;
+        var hostPorts = host.Spec.Ports;
+        if (selfPorts.Count == 0 || hostPorts.Count == 0)
+            throw new InvalidOperationException($"Cannot attach {shape}: missing port geometry");
+        var snap = ModularShip.SnapBlock(selfPorts[Mathf.PosMod(self, selfPorts.Count)],
+            hostPorts[Mathf.PosMod(port, hostPorts.Count)], host.Position, host.Angle);
         return ship.AddBlock(shape, snap.Position, snap.Angle);
     }
     public void Load(Vector2I cell, Vector2 player)
