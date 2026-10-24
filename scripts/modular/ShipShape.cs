@@ -58,6 +58,18 @@ public static class ShipShapeLibrary
         /// <summary>是否为武器。</summary>
         public bool IsWeapon => Damage > 0.0f;
 
+        /// <summary>
+        /// 推力方向（本地坐标，未旋转）。指向推力施加的相反方向（即喷口指向，
+        /// 力沿 -ThrustDirection 施加）。对齐 Reassembly「推进器在挂点施力」。
+        /// 默认 +X（朝右）。
+        /// </summary>
+        public Vector2 ThrustDirection { get; init; } = Vector2.Right;
+
+        /// <summary>
+        /// 炮口方向（本地坐标，未旋转）。武器沿此方向发射。默认 +X。
+        /// </summary>
+        public Vector2 WeaponDirection { get; init; } = Vector2.Right;
+
         /// <summary>该形状的顶点（局部坐标，未旋转）。</summary>
         public Vector2[] Vertices()
         {
@@ -106,6 +118,7 @@ public static class ShipShapeLibrary
                 Id = "thruster", Label = "推进器", Category = "机动", ColorHex = "#cf7bff",
                 Sides = 3, Radius = 22.0f, Mass = 5.0f, Hull = 25.0f, Thrust = 40.0f,
                 Ports = PortsForSides(3, 22.0f),
+                ThrustDirection = Vector2.Left,
             },
             // 姿态陀螺：小六边形。
             ["gyro"] = new()
@@ -120,6 +133,7 @@ public static class ShipShapeLibrary
                 Id = "laser", Label = "脉冲激光", Category = "武器", ColorHex = "#f07c8e",
                 Sides = 5, Radius = 22.0f, Mass = 5.0f, Hull = 22.0f, Damage = 6.0f,
                 Ports = PortsForSides(5, 22.0f),
+                WeaponDirection = Vector2.Right,
             },
             // 动能炮：方形。
             ["cannon"] = new()
@@ -127,6 +141,7 @@ public static class ShipShapeLibrary
                 Id = "cannon", Label = "动能炮", Category = "武器", ColorHex = "#d97676",
                 Sides = 4, Radius = 20.0f, Mass = 6.0f, Hull = 30.0f, Damage = 4.0f,
                 Ports = PortsForSides(4, 20.0f),
+                WeaponDirection = Vector2.Right,
             },
             // 连续光束：五边形。
             ["beam"] = new()
@@ -134,6 +149,7 @@ public static class ShipShapeLibrary
                 Id = "beam", Label = "连续光束", Category = "武器", ColorHex = "#ff7bb0",
                 Sides = 5, Radius = 21.0f, Mass = 6.0f, Hull = 20.0f, Damage = 8.0f,
                 Ports = PortsForSides(5, 21.0f),
+                WeaponDirection = Vector2.Right,
             },
             // 磁轨炮：六边形（长条形武器）。
             ["railgun"] = new()
@@ -141,6 +157,7 @@ public static class ShipShapeLibrary
                 Id = "railgun", Label = "磁轨炮", Category = "武器", ColorHex = "#e9a56a",
                 Sides = 6, Radius = 22.0f, Mass = 8.0f, Hull = 28.0f, Damage = 10.0f,
                 Ports = PortsForSides(6, 22.0f),
+                WeaponDirection = Vector2.Right,
             },
             // 导弹舱：方形。
             ["missile"] = new()
@@ -148,6 +165,7 @@ public static class ShipShapeLibrary
                 Id = "missile", Label = "导弹舱", Category = "武器", ColorHex = "#d8d27a",
                 Sides = 4, Radius = 21.0f, Mass = 7.0f, Hull = 24.0f, Damage = 14.0f,
                 Ports = PortsForSides(4, 21.0f),
+                WeaponDirection = Vector2.Right,
             },
             // 偏转护盾：圆形视觉，用八边形近似。
             ["shield"] = new()
@@ -162,6 +180,7 @@ public static class ShipShapeLibrary
                 Id = "point_defense", Label = "点防御炮", Category = "防御", ColorHex = "#e28b8b",
                 Sides = 6, Radius = 14.0f, Mass = 4.0f, Hull = 18.0f, Damage = 3.0f,
                 Ports = PortsForSides(6, 14.0f),
+                WeaponDirection = Vector2.Right,
             },
             // 裂变炉：大六边形。
             ["reactor"] = new()

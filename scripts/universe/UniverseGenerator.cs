@@ -102,8 +102,8 @@ public static class UniverseGenerator
                     Name = $"恒星 {sector.X},{sector.Y}-{i}",
                     Radius = 160.0f + (float)rng.NextDouble() * 120.0f,
                     ColorHex = StarColor(rng),
-                    GravityRadius = 1200.0f,
-                    GravityStrength = 90000.0f,
+                    GravityRadius = 2400.0f,
+                    GravityStrength = 900000.0f,
                 });
             }
             else if (roll < 0.55)
@@ -117,8 +117,8 @@ public static class UniverseGenerator
                     Radius = 46.0f + (float)rng.NextDouble() * 70.0f,
                     ColorHex = BiomeColor(biome),
                     Biome = biome,
-                    GravityRadius = 600.0f,
-                    GravityStrength = 26000.0f,
+                    GravityRadius = 1400.0f,
+                    GravityStrength = 260000.0f,
                 });
             }
             else if (roll < 0.80)
@@ -130,8 +130,8 @@ public static class UniverseGenerator
                     Name = StationName(rng),
                     Radius = 30.0f + (float)rng.NextDouble() * 22.0f,
                     ColorHex = "#7bb7e8",
-                    GravityRadius = 220.0f,
-                    GravityStrength = 3000.0f,
+                    GravityRadius = 500.0f,
+                    GravityStrength = 16000.0f,
                 });
             }
             else

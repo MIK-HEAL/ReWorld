@@ -27,10 +27,28 @@ public partial class UniverseView : Node2D
     private readonly List<UniverseGenerator.CelestialBody> _visibleBodies = new();
     private UniverseGenerator.CelestialBody? _nearestBody;
     private string _hoverBodyName = "";
+    private float _currentGravity;   // 当前所受合引力加速度（用于 HUD 显示）。
 
     private Font _font = null!;
     private ulong _starSeed = 12345;
     private int _bodyRegenCounter;
+
+    /// <summary>玩家舰体（来自模块化造舰编辑器）。未设置时回退到占位三角形。</summary>
+    private ModularShip? _ship;
+    private readonly Dictionary<int, float> _thrusterActivity = new();
+
+    /// <summary>设置玩家舰体（由 Main 从造舰编辑器传入）。</summary>
+    public void SetShip(ModularShip ship)
+    {
+        _ship = ship;
+    }
+
+    /// <summary>当前舰体的推进器挂点（基于模块位置 + 朝向）。</summary>
+    private List<ModularShip.ThrusterMount> ThrusterMounts =>
+        _ship?.GetThrusterMounts() ?? new List<ModularShip.ThrusterMount>();
+
+    private float ShipTotalThrust => _ship?.TotalThrust ?? 0.0f;
+    private float ShipTotalMass => _ship?.TotalMass ?? 1.0f;
 
     public override void _Ready()
     {
@@ -69,16 +87,23 @@ public partial class UniverseView : Node2D
 
         // 朝向（俯视 2D）：heading 是弧度。
         var forward = new Vector2(Mathf.Cos(_playerHeading), Mathf.Sin(_playerHeading));
-        var thrust = forward * throttle * 520.0f;
-        _playerVelocity += thrust * dt;
+
+        // 推力：按模块推进器挂点施力（对齐 Reassembly「推进器在挂点施力」）。
+        // 有真实舰体时用模块推进器 + 差动转向；否则回退到占位三角的固定推力。
+        if (_ship is not null && ShipTotalThrust > 0.0f)
+        {
+            ApplyModuleThrust(throttle, yaw, dt);
+        }
+        else
+        {
+            var thrust = forward * throttle * 520.0f;
+            _playerVelocity += thrust * dt;
+            _playerAngularVelocity = Mathf.Lerp(_playerAngularVelocity, yaw * 2.6f, 0.18f);
+        }
 
         // 引力：仿 Reassembly 的 kGravityConstant 牛顿引力。
-        // 每个大质量天体（星球/恒星/空间站）在其引力井半径内产生加速度，
-        // a = G*M / r^2（方向指向天体质心）。多个引力井线性叠加。
         ApplyGravity(dt);
 
-        // 转向。
-        _playerAngularVelocity = Mathf.Lerp(_playerAngularVelocity, yaw * 2.6f, 0.18f);
         _playerHeading += _playerAngularVelocity * dt;
 
         // 阻尼 + 最大速度。
@@ -90,9 +115,80 @@ public partial class UniverseView : Node2D
         _playerPosition += _playerVelocity * dt;
     }
 
-    /// <summary>牛顿引力：对玩家舰施加各天体引力井的加速度。</summary>
+    /// <summary>按模块推进器施力：推力沿各挂点方向，偏轴推进器产生转向力矩。</summary>
+    private void ApplyModuleThrust(float throttle, float yaw, float dt)
+    {
+        var mounts = ThrusterMounts;
+        var forceSum = Vector2.Zero;
+        var torqueSum = 0.0f;
+
+        foreach (var mount in mounts)
+        {
+            var worldForce = mount.Force.Rotated(_playerHeading);
+            var activation = 0.0f;
+
+            // 前进：点火力方向与船头（+X 世界朝向）同向的推进器。
+            if (throttle > 0.0f)
+            {
+                var forwardAlign = Mathf.Max(0.0f, worldForce.Dot(Vector2.Right.Rotated(_playerHeading)));
+                activation = Mathf.Max(activation, forwardAlign * throttle);
+            }
+            else if (throttle < 0.0f)
+            {
+                var reverseAlign = Mathf.Max(0.0f, worldForce.Dot(-Vector2.Right.Rotated(_playerHeading)));
+                activation = Mathf.Max(activation, reverseAlign * -throttle);
+            }
+
+            // 转向：偏轴推进器差动点火，产生力矩。
+            if (yaw != 0.0f)
+            {
+                var steerTorque = mount.Offset.X * worldForce.Y - mount.Offset.Y * worldForce.X;
+                if (steerTorque * yaw > 0.0f)
+                    activation = Mathf.Max(activation, Mathf.Min(1.0f, Mathf.Abs(steerTorque) * 0.05f) * Mathf.Abs(yaw));
+            }
+
+            if (activation <= 0.0f)
+            {
+                _thrusterActivity[KeyFor(mount)] = 0.0f;
+                continue;
+            }
+
+            forceSum += worldForce * (mount.Power * activation);
+            var torque = mount.Offset.X * worldForce.Y - mount.Offset.Y * worldForce.X;
+            torqueSum += torque * mount.Power * activation;
+            _thrusterActivity[KeyFor(mount)] = activation;
+        }
+
+        var massResponse = Mathf.Clamp(34.0f / Mathf.Max(1.0f, ShipTotalMass), 0.35f, 1.35f);
+        if (forceSum.LengthSquared() > 0.0001f)
+        {
+            var acceleration = forceSum.Normalized() * (forceSum.Length() / Mathf.Max(1.0f, ShipTotalMass)) * massResponse * 22.0f;
+            _playerVelocity += acceleration * dt;
+        }
+
+        if (Mathf.Abs(torqueSum) > 0.0001f)
+        {
+            var angularAccel = Mathf.Clamp(torqueSum / Mathf.Max(1.0f, ShipTotalMass), -6.0f, 6.0f) * massResponse * 0.35f;
+            _playerAngularVelocity += angularAccel * dt;
+        }
+        else
+        {
+            _playerAngularVelocity = Mathf.Lerp(_playerAngularVelocity, yaw * 2.6f, 0.18f);
+        }
+    }
+
+    /// <summary>推进器挂点作为活动映射的键（用其偏移量哈希，简化处理）。</summary>
+    private static int KeyFor(ModularShip.ThrusterMount mount) =>
+        (mount.Offset.X * 1000).GetHashCode() ^ (mount.Offset.Y * 1000).GetHashCode();
+
+    /// <summary>
+    /// 牛顿引力（对齐 Reassembly 的 kGravityConstant 模型）：
+    /// 加速度 a = G·M / r²，方向指向天体质心。多个引力井线性叠加。
+    /// 用软核（softening）参数避免 r→0 时的奇点。
+    /// </summary>
     private void ApplyGravity(float dt)
     {
+        _currentGravity = 0.0f;
         foreach (var body in _visibleBodies)
         {
             if (body.GravityRadius <= 0.0f || body.GravityStrength <= 0.0f)
@@ -103,11 +199,20 @@ public partial class UniverseView : Node2D
             if (distance <= 0.01f || distance > body.GravityRadius)
                 continue;
 
-            // 引力井内线性衰减：半径边缘趋近 0，中心最强（避免 r^2 在中心奇点）。
-            var falloff = 1.0f - distance / body.GravityRadius;
-            var acceleration = body.GravityStrength * falloff / Mathf.Max(distance, body.Radius * 0.5f);
+            // 牛顿平方反比：a = G·M / r²。
+            // 软化：r_soft = max(r, body.Radius)，避免贴脸时的数值爆炸。
+            var softDistance = Mathf.Max(distance, body.Radius);
+            var acceleration = body.GravityStrength / (softDistance * softDistance);
             _playerVelocity += delta.Normalized() * acceleration * dt;
+            _currentGravity += acceleration;
         }
+    }
+
+    /// <summary>计算某天体的圆轨道速度（Reassembly 的 circularOrbitVel）。</summary>
+    private float CircularOrbitVel(UniverseGenerator.CelestialBody body, float distance)
+    {
+        var r = Mathf.Max(distance, body.Radius);
+        return Mathf.Sqrt(body.GravityStrength / r);
     }
 
     private void UpdateCamera(float dt)
@@ -234,11 +339,17 @@ public partial class UniverseView : Node2D
         var position = body.Position;
         var color = new Color(body.ColorHex);
 
-        // 引力井：淡色圆环 + 渐变，让玩家感知引力范围。
+        // 引力井：多层同心圆，越靠近中心越亮，直观展示引力范围与强度。
         if (body.GravityRadius > 0.0f)
         {
-            DrawCircle(position, body.GravityRadius, new Color("#7bb7e8", 0.06f));
-            DrawCircle(position, body.GravityRadius, new Color("#7bb7e8", 0.25f), false, 1.0f);
+            var rings = 5;
+            for (var i = rings; i >= 1; i--)
+            {
+                var r = body.GravityRadius * i / rings;
+                var alpha = 0.10f * (1.0f - (float)(i - 1) / rings);
+                DrawCircle(position, r, new Color("#7bb7e8", alpha));
+            }
+            DrawCircle(position, body.GravityRadius, new Color("#7bb7e8", 0.35f), false, 1.0f / _cameraZoom);
         }
 
         switch (body.Kind)
@@ -305,8 +416,15 @@ public partial class UniverseView : Node2D
     private void DrawPlayer()
     {
         var position = _playerPosition;
+        if (_ship is not null && _ship.Blocks.Count > 0)
+        {
+            // 真实模块化舰体：按模块多边形渲染（与编辑器一致）。
+            ModularShipVisual.Draw(this, _ship, position, _playerHeading, drawPorts: false, thrusterActivity: _thrusterActivity);
+            return;
+        }
+
+        // 占位：未设置舰体时的小三角舰。
         var forward = new Vector2(Mathf.Cos(_playerHeading), Mathf.Sin(_playerHeading));
-        // 玩家是一艘小三角舰（占位，后续接实际舰体）。
         var nose = position + forward * 18.0f;
         var back = position - forward * 14.0f;
         var side = forward.Rotated(Mathf.Pi * 0.5f) * 10.0f;
@@ -341,6 +459,15 @@ public partial class UniverseView : Node2D
             };
             DrawString(_font, new Vector2(16, 34), $"最近{kindLabel}：{_nearestBody.Name} · {distance:0} 单位",
                 HorizontalAlignment.Left, -1, 12, new Color("#7f93a8"));
+        }
+
+        // 引力状态指示。
+        if (_currentGravity > 5.0f)
+        {
+            var gravityLabel = _currentGravity > 800.0f ? "⚠ 强引力" : (_currentGravity > 150.0f ? "引力作用中" : "弱引力");
+            var gravityColor = _currentGravity > 800.0f ? new Color("#e8a07b") : new Color("#7bb7e8");
+            DrawString(_font, new Vector2(16, 54), $"引力 {_currentGravity:0} m/s² · {gravityLabel}",
+                HorizontalAlignment.Left, -1, 12, gravityColor);
         }
 
         // 悬停天体名。

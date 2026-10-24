@@ -84,6 +84,9 @@ public partial class Main : Node2D
         AddChild(_universe);
         _universe.Visible = true;
 
+        // 把模块化造舰的舰体共享给宇宙探索（运行时以模块多边形显示）。
+        _universe.SetShip(_shipBuilder.Ship);
+
         // 启动进入宇宙：隐藏原有建造 UI。
         _builderUi.Visible = false;
         _spaceHud.Visible = false;

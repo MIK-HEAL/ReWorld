@@ -64,6 +64,11 @@ public partial class SpaceTest : Node2D
         public float Damage;
     }
 
+    /// <summary>玩家舰体在战斗中的统一指标（模块化舰体或旧网格蓝图派生）。</summary>
+    private readonly record struct PlayerMetrics(
+        double Shield, double Hull, double Heat, double Cooling,
+        double Mass, double Thrust, double Damage);
+
     private WorldState _world = null!;
     private Vector2 _playerPosition = new(1360.0f, 960.0f);
     private Vector2 _cameraPosition = new(1360.0f, 960.0f);
@@ -99,6 +104,13 @@ public partial class SpaceTest : Node2D
     private readonly HashSet<int> _disabledShipModules = new();
     private bool _requestedExit;
     private int _expeditionStage = 1;
+
+    /// <summary>玩家模块化舰体（来自造舰编辑器，替代旧网格 ShipGraph 作为运行时数据源）。</summary>
+    private ModularShip? _playerShip;
+    private readonly Dictionary<int, float> _playerThrusterActivity = new();
+
+    /// <summary>挂点偏移缩放：模块化舰体已是世界单位（1.0），旧网格蓝图需放大到世界（18.0）。</summary>
+    private float MountScale => _playerShip is not null ? 1.0f : 18.0f;
 
     public bool IsActive => _active;
     public string Phase => _phase.ToString();
@@ -157,6 +169,12 @@ public partial class SpaceTest : Node2D
     }
 
     public void Setup(WorldState newWorld) => _world = newWorld;
+
+    /// <summary>设置玩家模块化舰体（由 Main 从造舰编辑器传入）。</summary>
+    public void SetShip(ModularShip ship)
+    {
+        _playerShip = ship;
+    }
 
     public void Enter()
     {
@@ -740,6 +758,27 @@ public partial class SpaceTest : Node2D
     private List<ThrusterVector> BuildThrusterProfile()
     {
         var profile = new List<ThrusterVector>();
+
+        // 优先使用模块化舰体（Reassembly 式），回退到旧网格蓝图。
+        if (_playerShip is not null)
+        {
+            var com = _playerShip.CenterOfMass();
+            foreach (var mount in _playerShip.GetThrusterMounts())
+            {
+                var localOffset = mount.Offset;
+                var localForce = mount.Force;
+                var torque = localOffset.X * localForce.Y - localOffset.Y * localForce.X;
+                profile.Add(new ThrusterVector
+                {
+                    LocalOffset = localOffset,
+                    LocalForce = localForce,
+                    Power = mount.Power,
+                    Torque = torque,
+                });
+            }
+            return profile;
+        }
+
         ModuleInstance? core = null;
         foreach (var module in _world.ShipGraph.Modules)
         {
@@ -785,6 +824,23 @@ public partial class SpaceTest : Node2D
     private List<WeaponMount> BuildWeaponProfile()
     {
         var profile = new List<WeaponMount>();
+
+        // 优先使用模块化舰体（Reassembly 式）。
+        if (_playerShip is not null)
+        {
+            var com = _playerShip.CenterOfMass();
+            foreach (var mount in _playerShip.GetWeaponMounts())
+            {
+                profile.Add(new WeaponMount
+                {
+                    LocalOffset = mount.Offset,
+                    LocalDirection = mount.Direction,
+                    Damage = mount.Damage,
+                });
+            }
+            return profile;
+        }
+
         ModuleInstance? core = null;
         foreach (var module in _world.ShipGraph.Modules)
         {
@@ -838,6 +894,33 @@ public partial class SpaceTest : Node2D
     }
 
     private static bool IsWeaponKind(string kind) => kind is "laser" or "cannon" or "beam" or "railgun" or "missile" or "point_defense";
+
+    /// <summary>玩家舰体统一战斗指标：模块化舰体优先，回退旧网格蓝图。</summary>
+    private PlayerMetrics GetPlayerMetrics()
+    {
+        if (_playerShip is not null)
+        {
+            var blocks = _playerShip.Blocks;
+            double hull = 0, heat = 0, cooling = 0, shield = 0, damage = 0, thrust = 0;
+            foreach (var block in blocks)
+            {
+                if (!block.Enabled)
+                    continue;
+                var spec = block.Spec;
+                hull += spec.Hull;
+                shield += spec.Id == "shield" ? spec.Hull * 0.5f : 0.0;
+                damage += spec.Damage;
+                thrust += spec.Thrust;
+                if (spec.Id == "radiator") cooling += spec.Hull * 0.2f;
+            }
+            var mass = _playerShip.TotalMass;
+            return new PlayerMetrics(shield, hull, heat, cooling, mass, thrust, damage);
+        }
+
+        var metrics = _world.GetMetrics();
+        return new PlayerMetrics(metrics.Shield, metrics.Hull, metrics.Heat, metrics.Cooling,
+            metrics.Mass, metrics.Thrust, metrics.Damage);
+    }
 
     private Vector2 GetCenterOfMass()
     {
@@ -923,7 +1006,7 @@ public partial class SpaceTest : Node2D
             _battleHeat = Math.Min(_battleHeatCapacity * 1.8, _battleHeat + metrics.Heat * 0.08);
             foreach (var weapon in weaponProfile)
             {
-                var mount = _playerPosition + (weapon.LocalOffset * 18.0f).Rotated(_playerHeading);
+                var mount = _playerPosition + (weapon.LocalOffset * MountScale).Rotated(_playerHeading);
                 var direction = ResolveWeaponDirection(weapon, mount, ScreenToWorld(fireButton.Position));
                 _projectiles.Add(new Projectile
                 {
@@ -1119,14 +1202,23 @@ public partial class SpaceTest : Node2D
     private void DrawPlayer()
     {
         var angle = _playerHeading;
-        DrawShipBody(angle);
+
+        // 模块化舰体：直接用可复用渲染器绘制多边形模块。
+        if (_playerShip is not null)
+        {
+            ModularShipVisual.Draw(this, _playerShip, _playerPosition, angle, drawPorts: false, thrusterActivity: _playerThrusterActivity);
+        }
+        else
+        {
+            DrawShipBody(angle);
+        }
 
         // Render the actual engine mounts on the hull. The player can see which
         // engines are behind the center line, which ones are offset for yaw, and
         // why a blueprint with no forward-facing engine cannot reverse.
         foreach (var thruster in _thrusterProfile)
         {
-            var mount = _playerPosition + (thruster.LocalOffset * 18.0f).Rotated(angle);
+            var mount = _playerPosition + (thruster.LocalOffset * MountScale).Rotated(angle);
             var forceDirection = thruster.LocalForce.Rotated(angle);
             var nozzle = mount + forceDirection * 12.0f;
             var activity = Mathf.Clamp(thruster.Activation, 0.0f, 1.0f);
@@ -1144,7 +1236,7 @@ public partial class SpaceTest : Node2D
         // travelling sideways after a differential-thrust turn.
         DrawLine(_playerPosition, _playerPosition + new Vector2(42.0f, 0.0f).Rotated(angle), new Color("#f4f1de", 0.55f), 1.5f);
 
-        var metrics = _world.GetMetrics();
+        var metrics = GetPlayerMetrics();
         if (metrics.Shield > 0.0 && _playerShield > 0.0)
             DrawCircle(_playerPosition, 38.0f, new Color("#7bb7e8", 0.45f), false, 2.0f);
         if (_activeThrusters > 0 && _appliedForceDirection.LengthSquared() > 0.0f)
@@ -1163,7 +1255,7 @@ public partial class SpaceTest : Node2D
             var mousePosition = ScreenToWorld(GetViewport().GetMousePosition());
             foreach (var weapon in _weaponProfile)
             {
-                var mount = _playerPosition + (weapon.LocalOffset * 18.0f).Rotated(angle);
+                var mount = _playerPosition + (weapon.LocalOffset * MountScale).Rotated(angle);
                 var hardpointDirection = weapon.LocalDirection.Rotated(angle);
                 var cannon = mount + hardpointDirection * 12.0f;
                 var aimDirection = ResolveWeaponDirection(weapon, cannon, mousePosition);
@@ -1171,6 +1263,20 @@ public partial class SpaceTest : Node2D
                 DrawLine(cannon, cannon + aimDirection * 12.0f, new Color("#f07c8e", 0.55f), 2.0f);
             }
         }
+    }
+
+    /// <summary>玩家舰体指标：模块化舰体直接派生，旧网格从 WorldState 取。</summary>
+    private (double Shield, double Damage) GetPlayerMetrics()
+    {
+        if (_playerShip is not null)
+        {
+            // 模块化舰体：护盾/伤害从存活模块派生。
+            var shield = _playerShip.Blocks.Where(b => b.Enabled && b.Spec.Id == "shield").Sum(b => b.Spec.Hull * 0.5f);
+            var damage = _playerShip.TotalDamage;
+            return (shield, damage);
+        }
+        var metrics = _world.GetMetrics();
+        return (metrics.Shield, metrics.Damage);
     }
 
     private void DrawShipBody(float angle)

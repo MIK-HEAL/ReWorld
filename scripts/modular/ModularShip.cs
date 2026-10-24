@@ -25,8 +25,20 @@ public sealed class ModularShip
         /// <summary>朝向（弧度）。</summary>
         public float Angle { get; set; }
         public bool Enabled { get; set; } = true;
+        /// <summary>运行时耐久（默认等于形状 Hull，被击中后下降）。</summary>
+        public float Health { get; set; }
 
         public ShipShapeLibrary.ShapeSpec Spec => ShipShapeLibrary.Get(ShapeId);
+
+        public Block Clone() => new()
+        {
+            Id = Id,
+            ShapeId = ShapeId,
+            Position = Position,
+            Angle = Angle,
+            Enabled = Enabled,
+            Health = Health,
+        };
     }
 
     private readonly List<Block> _blocks = new();
@@ -57,6 +69,81 @@ public sealed class ModularShip
         Changed?.Invoke();
         return true;
     }
+
+    /// <summary>深拷贝一份舰体（含方块与运行时耐久）。</summary>
+    public ModularShip Clone()
+    {
+        var copy = new ModularShip();
+        copy._nextId = _nextId;
+        foreach (var block in _blocks)
+            copy._blocks.Add(block.Clone());
+        return copy;
+    }
+
+    /// <summary>重置所有方块耐久到形状满值（进入试航前调用）。</summary>
+    public void ResetHealth()
+    {
+        foreach (var block in _blocks)
+        {
+            block.Health = block.Spec.Hull;
+            block.Enabled = true;
+        }
+    }
+
+    /// <summary>一个推进器挂点（用于运行时推力/转向计算）。</summary>
+    public readonly record struct ThrusterMount(Vector2 Offset, Vector2 Force, float Power);
+
+    /// <summary>一个武器挂点（用于运行时开火）。</summary>
+    public readonly record struct WeaponMount(Vector2 Offset, Vector2 Direction, float Damage);
+
+    /// <summary>
+    /// 计算所有可用的推进器挂点（对齐 Reassembly「推进器在挂点施力」）。
+    /// 挂点偏移以质心为原点，力方向 = 形状 ThrustDirection 旋转方块朝向，
+    /// 推力 = 形状 Thrust。只统计 Enabled 且连通到主体的推进器。
+    /// </summary>
+    public List<ThrusterMount> GetThrusterMounts(float tolerance = 1.5f)
+    {
+        var com = CenterOfMass();
+        var mainComponent = GetMainComponent(tolerance);
+        var mounts = new List<ThrusterMount>();
+        foreach (var block in _blocks)
+        {
+            if (!block.Enabled || !block.Spec.IsThruster)
+                continue;
+            if (!mainComponent.Contains(block))
+                continue;
+            var force = block.Spec.ThrustDirection.Rotated(block.Angle);
+            mounts.Add(new ThrusterMount(block.Position - com, force, block.Spec.Thrust));
+        }
+        return mounts;
+    }
+
+    /// <summary>计算所有可用的武器挂点（对齐 Reassembly「武器沿朝向发射」）。</summary>
+    public List<WeaponMount> GetWeaponMounts(float tolerance = 1.5f)
+    {
+        var com = CenterOfMass();
+        var mainComponent = GetMainComponent(tolerance);
+        var mounts = new List<WeaponMount>();
+        foreach (var block in _blocks)
+        {
+            if (!block.Enabled || !block.Spec.IsWeapon)
+                continue;
+            if (!mainComponent.Contains(block))
+                continue;
+            var dir = block.Spec.WeaponDirection.Rotated(block.Angle);
+            mounts.Add(new WeaponMount(block.Position - com, dir, block.Spec.Damage));
+        }
+        return mounts;
+    }
+
+    /// <summary>是否含核心且核心存活。</summary>
+    public bool HasLiveCore => Core is not null;
+
+    /// <summary>总火力（存活武器伤害之和）。</summary>
+    public float TotalDamage => GetWeaponMounts().Sum(m => m.Damage);
+
+    /// <summary>总推力（存活推进器推力之和）。</summary>
+    public float TotalThrust => GetThrusterMounts().Sum(m => m.Power);
 
     /// <summary>
     /// 计算方块 a 的端口 p 与方块 b 的端口 q 连接后，a 应放置的世界位置与朝向。
@@ -172,6 +259,48 @@ public sealed class ModularShip
 
     /// <summary>舰体总质量。</summary>
     public float TotalMass => _blocks.Where(block => block.Enabled).Sum(block => block.Spec.Mass);
+
+    /// <summary>含核心的连通分量（舰船主体）。无核心时返回第一个分量或空。</summary>
+    public List<Block> GetMainComponent(float tolerance = 1.5f)
+    {
+        var components = GetConnectedComponents(tolerance);
+        return components.FirstOrDefault(component => component.Any(block => block.ShapeId == "core"))
+            ?? components.FirstOrDefault()
+            ?? new List<Block>();
+    }
+
+    /// <summary>点-多边形命中测试：返回世界坐标命中的存活方块（优先上层，即后放置的）。</summary>
+    public Block? GetBlockAt(Vector2 worldPos)
+    {
+        for (var i = _blocks.Count - 1; i >= 0; i--)
+        {
+            var block = _blocks[i];
+            if (!block.Enabled)
+                continue;
+            if (PointInPolygon(worldPos, block))
+                return block;
+        }
+        return null;
+    }
+
+    /// <summary>判断世界坐标是否落在某方块的（旋转后）多边形内。</summary>
+    private static bool PointInPolygon(Vector2 point, Block block)
+    {
+        var spec = block.Spec;
+        var vertices = spec.Vertices();
+        // 把点变换到方块本地空间（未旋转），再做多边形测试。
+        var local = (point - block.Position).Rotated(-block.Angle);
+        var inside = false;
+        for (int i = 0, j = vertices.Length - 1; i < vertices.Length; j = i++)
+        {
+            var vi = vertices[i];
+            var vj = vertices[j];
+            if ((vi.Y > local.Y) != (vj.Y > local.Y) &&
+                local.X < (vj.X - vi.X) * (local.Y - vi.Y) / (vj.Y - vi.Y) + vi.X)
+                inside = !inside;
+        }
+        return inside;
+    }
 
     /// <summary>舰体包围盒半径（用于相机/碰撞粗略估算）。</summary>
     public float BoundingRadius()

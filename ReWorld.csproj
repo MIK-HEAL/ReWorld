@@ -7,4 +7,9 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
+
+  <!-- Reassembly/ 目录是逆向参考代码，不参与 ReWorld 编译。 -->
+  <ItemGroup>
+    <Compile Remove="Reassembly\**\*.cs" />
+  </ItemGroup>
 </Project>
