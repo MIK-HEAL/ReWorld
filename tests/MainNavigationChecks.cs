@@ -45,6 +45,10 @@ public partial class MainNavigationChecks : Node
             Check(ReferenceEquals(shipField.GetValue(universe), builder.Ship), "Flight and editor share the same ship");
             await Press(Key.R);
             Check(universe.ControlScheme == ShipFlightController.ControlScheme.Cardinal, "R changes flight mode in the universe");
+            await Press(Key.Tab);
+            Check(universe.TableOpen, "Tab opens fleet table without opening builder");
+            await Press(Key.Tab);
+            Check(!universe.TableOpen, "Tab returns from command table");
 
             foreach (var key in new[] { Key.Tab, Key.B, Key.Space, Key.Escape })
             {

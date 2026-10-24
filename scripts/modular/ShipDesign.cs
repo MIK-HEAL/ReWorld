@@ -52,8 +52,8 @@ public sealed class ShipDesign
                 Position = block.Position,
                 Angle = block.Angle,
             };
-            if (block.ShapeId == "core")
-                sb.CommandFaction = 1;
+            if (block.Spec.IsCore)
+                sb.CommandFaction = FactionRelations.Player;
             design.Blocks.Add(sb);
         }
         return design;
@@ -97,7 +97,7 @@ public sealed class ShipDesign
 
         // 匹配每个方块：{ID, {x, y}, angle, 可选 command={faction=...}}
         var blockRegex = new Regex(
-            @"\{\s*(\d+)\s*,\s*\{\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\}\s*,\s*(-?[\d.]+)\s*(?:,\s*command\s*=\s*\{\s*faction\s*=\s*(\d+)\s*\})?",
+            @"\{\s*(\d+)\s*,\s*\{\s*(-?[\d.eE+]+)\s*,\s*(-?[\d.eE+]+)\s*\}(?:\s*,\s*(-?[\d.eE+]+))?\s*(?:,\s*command\s*=\s*\{\s*faction\s*=\s*(\d+))?",
             RegexOptions.Singleline);
         foreach (Match m in blockRegex.Matches(lua))
         {
@@ -107,7 +107,7 @@ public sealed class ShipDesign
                 Position = new Vector2(
                     float.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture),
                     float.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture)),
-                Angle = float.Parse(m.Groups[4].Value, CultureInfo.InvariantCulture),
+                Angle = m.Groups[4].Success ? float.Parse(m.Groups[4].Value, CultureInfo.InvariantCulture) : 0,
             };
             if (m.Groups[5].Success)
                 sb.CommandFaction = int.Parse(m.Groups[5].Value);

@@ -76,7 +76,8 @@ public partial class UniverseTravelChecks : Node
             for (var i = 0; i < 600; i++) fine.Advance(1f/120);
             Check(coarse.Position.DistanceTo(fine.Position) < 3 && Math.Abs(coarse.Speed-fine.Speed) < 1,
                 "Travel distance and acceleration are independent of frame rate");
-            Check(view.Traffic.Stations.Count == 2 && view.Traffic.Vessels.Count == 6, "Two stations, four local ships, two escorts");
+            Check(view.Traffic.Stations.Count == 2 && view.Traffic.Vessels.Count == 8, "Two stations and independent faction traffic");
+            Check(view.Traffic.Vessels.All(v => !v.PlayerOwned && !v.Escort), "Player starts alone without faction NPC escorts");
             foreach (var station in view.Traffic.Stations.Values)
             {
                 Check(station.GetConnectedComponents().Count == 1 && station.Core is not null, "Station is one actual modular cluster");
@@ -141,7 +142,7 @@ public partial class UniverseTravelChecks : Node
             view.UpdateRenderTransform(0.5f);
             Check(view.RenderPosition.DistanceTo(view.PlayerPosition) < 2, "Smooth arrival preserves interpolation history");
             Check(destination.Bodies.All(b => !b.HasSurface || b.SurfaceDistance(view.PlayerPosition) > ship.BoundingRadius() + 180), "Arrival clears every solid body");
-            Check(view.Traffic.Cell == Vector2I.Right && view.Traffic.Vessels.Count == 6, "Traffic reloads without accumulating fleets");
+            Check(view.Traffic.Cell == Vector2I.Right && view.Traffic.Vessels.Count == 8, "Traffic reloads without accumulating fleets");
             var arrival = view.PlayerPosition;
             view._PhysicsProcess(2);
             Check(view.Warp.State == WarpDrive.Phase.Ready, "Cooldown ends in flight");

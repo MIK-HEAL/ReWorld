@@ -13,7 +13,7 @@ using System.Linq;
 ///
 /// 本类是纯数据（无场景节点），供建造编辑器与运行时渲染共用。
 /// </summary>
-public sealed class ModularShip
+public sealed partial class ModularShip
 {
     /// <summary>一个已放置的方块（照搬逆向 Block：Id + Position + Angle + Shape + Features + Ports + Health）。</summary>
     public sealed class Block
@@ -82,7 +82,18 @@ public sealed class ModularShip
     public ulong Revision { get; private set; }
     private void InvalidateGeometry() => Revision++;
 
-    public Block? Core => _blocks.FirstOrDefault(block => block.ShapeId == "core" && block.Enabled);
+    public Block? Core
+    {
+        get
+        {
+            for (var i = 0; i < _blocks.Count; i++)
+            {
+                var block = _blocks[i];
+                if (block.Spec.IsCore && block.Enabled && block.Health > 0) return block;
+            }
+            return null;
+        }
+    }
 
     /// <summary>添加方块并刷新端口连接状态（放置后自动与重合的空闲端口对接）。</summary>
     public Block AddBlock(string shapeId, Vector2 position, float angle)
@@ -101,7 +112,7 @@ public sealed class ModularShip
 
     public bool RemoveBlock(Block block)
     {
-        if (block.ShapeId == "core")
+        if (block.Spec.IsCore)
             return false;
         if (!_blocks.Remove(block))
             return false;
@@ -422,7 +433,7 @@ public sealed class ModularShip
         }
 
         return components
-            .OrderByDescending(component => component.Any(block => block.ShapeId == "core"))
+            .OrderByDescending(component => component.Any(block => block.Spec.IsCore))
             .ToList();
     }
 
@@ -433,7 +444,7 @@ public sealed class ModularShip
     public List<Block> GetMainComponent(float tolerance = 1.5f)
     {
         var components = GetConnectedComponents(tolerance);
-        return components.FirstOrDefault(component => component.Any(block => block.ShapeId == "core"))
+        return components.FirstOrDefault(component => component.Any(block => block.Spec.IsCore))
             ?? components.FirstOrDefault()
             ?? new List<Block>();
     }

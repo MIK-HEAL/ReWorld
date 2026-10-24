@@ -33,7 +33,7 @@ public enum BlockFeatures
     Hyperdrive = 1 << 14,    // ReWorld 跨星系迁跃能力（项目自定义）
 }
 
-public static class ShipShapeLibrary
+public static partial class ShipShapeLibrary
 {
     /// <summary>原版 EPort_ 注册值，0x140235c7b–0x140235ceb；只列当前使用的类型。</summary>
     public enum PortType
@@ -113,6 +113,21 @@ public static class ShipShapeLibrary
         public float ExhaustHalfWidth { get; init; }
         /// <summary>武器伤害。</summary>
         public float Damage { get; init; }
+        public string Description { get; init; } = "";
+        public int SourceFaction { get; init; }
+        public int NativeShape { get; init; }
+        public bool ReferenceGeometry { get; init; }
+        public WeaponKind WeaponKind { get; init; } = WeaponKind.Cannon;
+        public float Range { get; init; } = 1000;
+        public float ProjectileSpeed { get; init; } = 900;
+        public float FireInterval { get; init; } = 0.3f;
+        public float FireEnergy { get; init; } = 4;
+        public float SplashRadius { get; init; }
+        public float Generation { get; init; }
+        public float PowerCapacity { get; init; }
+        public float ShieldStrength { get; init; } = 100;
+        public float ShieldRadius { get; init; } = 80;
+        public float ShieldRegen { get; init; } = 10;
 
         /// <summary>施力方向（本地 +X）；排气方向相反。</summary>
         public Vector2 ThrustDirection { get; init; } = Vector2.Right;
@@ -154,7 +169,7 @@ public static class ShipShapeLibrary
     /// 因此方块能沿任意边连接，组合出任意角度的多边形舰体。
     /// 正多边形共用边长；引擎梯形与 COMMAND 核心使用已提取的专用顶点。
     /// </summary>
-    public static readonly IReadOnlyDictionary<string, ShapeSpec> Shapes =
+    private static readonly Dictionary<string, ShapeSpec> StarterShapes =
         new Dictionary<string, ShapeSpec>(StringComparer.Ordinal)
         {
             // shape 8：前部削角的 COMMAND 核心（insertLegacy），并非正六边形。
@@ -284,6 +299,14 @@ public static class ShipShapeLibrary
             Hull = hull,
             Thrust = thrust,
             Damage = damage,
+            WeaponKind = id switch { "laser" or "beam" => WeaponKind.Beam, "missile" => WeaponKind.Missile,
+                "point_defense" => WeaponKind.PointDefense, _ => WeaponKind.Cannon },
+            Range = id == "railgun" ? 3000 : 1000,
+            FireInterval = id is "laser" or "beam" ? 0.1f : id == "missile" ? 1.2f : 0.3f,
+            FireEnergy = id == "missile" ? 12 : 4,
+            SplashRadius = id == "missile" ? 45 : 0,
+            Generation = (features & BlockFeatures.Generator) != 0 ? 30 * nativeScale : 0,
+            PowerCapacity = (features & BlockFeatures.Generator) != 0 ? 120 * nativeScale : 0,
             TorquerTorque = torquerTorque,
             ThrustDirection = thrustDir ?? Vector2.Right,
             WeaponDirection = weaponDir ?? Vector2.Right,
@@ -357,11 +380,15 @@ public static class ShipShapeLibrary
     public static ShapeSpec Get(string id) => Shapes.TryGetValue(id, out var spec) ? spec : Shapes["hull"];
 
     /// <summary>建造面板的方块顺序（调色板按此顺序展示，鼠标点击选择）。</summary>
-    public static readonly string[] BuildOrder =
+    private static readonly string[] StarterOrder =
     {
         "core", "hull", "armor", "thruster", "thruster_medium", "thruster_large", "gyro",
         "laser", "cannon", "beam", "railgun", "missile",
         "shield", "point_defense", "reactor", "generator", "capacitor",
         "sensor", "hyperdrive", "radiator", "cargo", "tractor",
     };
+
+    public static readonly IReadOnlyDictionary<string, ShapeSpec> Shapes = LoadCatalog(StarterShapes);
+    public static readonly string[] BuildOrder = StarterOrder.Concat(Shapes.Keys.Except(StarterOrder)
+        .OrderBy(id => Shapes[id].SourceFaction).ThenBy(id => Shapes[id].NumId)).ToArray();
 }

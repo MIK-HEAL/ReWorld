@@ -295,7 +295,7 @@ public partial class ShipFlightChecks : Node
         for (var i = 0; i < 300; i++) view._PhysicsProcess(1.0 / 60);
         var physicsMilliseconds = watch.Elapsed.TotalMilliseconds / 300;
         var physicsBytes = GC.GetAllocatedBytesForCurrentThread() - allocated;
-        Check(physicsBytes < 16384, "Complete physics ticks do not rebuild topology or allocate solver arrays");
+        Check(physicsBytes < 16384, $"Complete physics ticks do not rebuild topology or allocate solver arrays ({physicsBytes} bytes/300 ticks)");
         GD.Print($"FLIGHT_PHYSICS_BENCHMARK: {physicsMilliseconds:F3} ms/tick, {physicsBytes} bytes/300 ticks");
         var reflectedProfile = typeof(UniverseView).GetField("_flightProfile",
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;

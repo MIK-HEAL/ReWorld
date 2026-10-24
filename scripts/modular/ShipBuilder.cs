@@ -70,6 +70,20 @@ public partial class ShipBuilder : Node2D
 
     public ModularShip Ship => _ship;
     public string SelectedShapeId => _selectedShapeId;
+    public PlayerProgress Progress { get; set; } = new();
+    private int _catalogPage;
+    private string _catalogCategory = "全部";
+    private string _technologyNotice = "选择模块 · U 花费 R 永久解锁";
+    private const int PageSize = 28;
+    private readonly List<(Rect2 Rect, string Category)> _categoryButtons = new();
+    private string[] FilteredCatalog() => ShipShapeLibrary.BuildOrder.Where(id => _catalogCategory == "全部" ||
+        ShipShapeLibrary.Get(id).Category == _catalogCategory).ToArray();
+    public bool UnlockSelected()
+    {
+        var unlocked = Progress.TryUnlock(_selectedShapeId);
+        _technologyNotice = unlocked ? "科技已解锁，可重复建造" : $"资源不足，需要 {PlayerProgress.UnlockCost(ShipShapeLibrary.Get(_selectedShapeId))} R";
+        return unlocked;
+    }
 
     public void SelectShape(string shapeId)
     {
@@ -288,6 +302,11 @@ public partial class ShipBuilder : Node2D
             if (mouse.Pressed && mouse.ButtonIndex is MouseButton.WheelUp or MouseButton.WheelDown)
             {
                 var sign = mouse.ButtonIndex == MouseButton.WheelUp ? 1 : -1;
+                if (mouse.Position.X >= PaletteX)
+                {
+                    _catalogPage = Math.Clamp(_catalogPage - sign, 0, Math.Max(0, (FilteredCatalog().Length - 1) / PageSize));
+                    return;
+                }
                 if (mouse.AltPressed) ScaleEngine(sign);
                 else
                 {
@@ -350,7 +369,10 @@ public partial class ShipBuilder : Node2D
                 if (clicked.Spec.IsCore) return;
                 _dragBefore = _ship.Clone();
                 if (mouse.AltPressed)
+                {
+                    if (!Progress.CanBuild(clicked.ShapeId)) { _dragBefore = null; _technologyNotice = "复制此模块前需要解锁科技"; return; }
                     clicked = _ship.AddBlock(clicked.ShapeId, clicked.Position, clicked.Angle);
+                }
                 _selection = _draggingBlock = clicked;
                 _dragGrabOffset = clicked.Position - ScreenToWorld(mouse.Position);
                 _previewAngle = clicked.Angle;
@@ -367,6 +389,12 @@ public partial class ShipBuilder : Node2D
             return;
         }
         if (@event is not InputEventKey key || !key.Pressed || key.Echo) return;
+        if (key.Keycode == Key.U) { UnlockSelected(); return; }
+        if (key.Keycode is Key.Pageup or Key.Pagedown)
+        {
+            _catalogPage = Math.Clamp(_catalogPage + (key.Keycode == Key.Pagedown ? 1 : -1), 0, Math.Max(0, (FilteredCatalog().Length - 1) / PageSize));
+            return;
+        }
         if (key.CtrlPressed && (key.Keycode == Key.Z || key.Keycode == Key.Y))
         {
             if (_draggingBlock is not null) return;
@@ -408,6 +436,7 @@ public partial class ShipBuilder : Node2D
 
     private void PlacePreview()
     {
+        if (!Progress.CanBuild(_selectedShapeId)) { _technologyNotice = "此模块尚未解锁 · U 购买科技"; return; }
         if (_snapPreview is not { Valid: true } snap) return;
         SaveUndo();
         _selection = _ship.AddBlock(_selectedShapeId, snap.Position, snap.Angle);
@@ -425,6 +454,11 @@ public partial class ShipBuilder : Node2D
     {
         if (screenPos.X < PaletteX || screenPos.X > PaletteX + PaletteWidth)
             return false;
+        if (new Rect2(PaletteX + 12, 576, 65, 26).HasPoint(screenPos)) { _catalogPage = Math.Max(0, _catalogPage - 1); return true; }
+        if (new Rect2(PaletteX + 220, 576, 65, 26).HasPoint(screenPos)) { _catalogPage = Math.Min((FilteredCatalog().Length - 1) / PageSize, _catalogPage + 1); return true; }
+        if (new Rect2(PaletteX + 12, 606, 276, 26).HasPoint(screenPos)) { UnlockSelected(); return true; }
+        foreach (var (rect, category) in _categoryButtons)
+            if (rect.HasPoint(screenPos)) { _catalogCategory = category; _catalogPage = 0; return true; }
         foreach (var (rect, shapeId) in _paletteButtons)
         {
             if (rect.HasPoint(screenPos))
@@ -504,15 +538,16 @@ public partial class ShipBuilder : Node2D
 
     private void DrawAmbientSpace()
     {
-        // Quiet vignette bands and sparse navigation ticks give the editor a hangar
-        // instrument feel without covering the construction area with decoration.
-        DrawRect(new Rect2(0, 0, ViewWidth, 88), new Color("#162330", 0.88f));
-        DrawRect(new Rect2(0, ViewHeight - 46, ViewWidth, 46), new Color("#162330", 0.92f));
-        for (var i = 0; i < 18; i++)
+        DrawRect(new Rect2(0, 0, ViewWidth, 72), new Color("#162330", 0.92f));
+        DrawRect(new Rect2(0, ViewHeight - 40, ViewWidth, 40), new Color("#162330", 0.95f));
+        DrawLine(new Vector2(0, 72), new Vector2(ViewWidth, 72), ReassemblyUi.PanelBorder, 1.2f);
+        DrawLine(new Vector2(0, ViewHeight - 40), new Vector2(ViewWidth, ViewHeight - 40), ReassemblyUi.PanelBorder, 1.2f);
+
+        for (var i = 0; i < 24; i++)
         {
-            var x = 24 + i * 71;
-            DrawLine(new Vector2(x, 78), new Vector2(x + 18, 78), new Color("#3c6077", 0.65f), 1);
-            DrawLine(new Vector2(x, ViewHeight - 46), new Vector2(x + 10, ViewHeight - 46), new Color("#3c6077", 0.55f), 1);
+            var x = 20 + i * 54;
+            DrawLine(new Vector2(x, 64), new Vector2(x + 12, 64), ReassemblyUi.PanelBorderHighlight * 0.6f, 1.0f);
+            DrawLine(new Vector2(x, ViewHeight - 34), new Vector2(x + 8, ViewHeight - 34), ReassemblyUi.PanelBorderHighlight * 0.5f, 1.0f);
         }
     }
 
@@ -720,21 +755,28 @@ public partial class ShipBuilder : Node2D
     {
         var panelRect = new Rect2(PaletteX, 92, PaletteWidth, ViewHeight - 108);
         ReassemblyUi.DrawChamferFrame(this, panelRect, ReassemblyUi.VoidDark, ReassemblyUi.CyanMuted * 0.7f, 10.0f, true, 1.2f);
-        DrawString(_font, new Vector2(PaletteX + 16, 120), "COMPONENTS", HorizontalAlignment.Left, -1, 15, ReassemblyUi.TextWhite);
-        DrawString(_font, new Vector2(PaletteX + PaletteWidth - 96, 120), "REASSEMBLY // 03", HorizontalAlignment.Left, -1, 10, ReassemblyUi.CyanHighlight);
+        DrawString(_font, new Vector2(PaletteX + 16, 120), $"方块目录 {ShipShapeLibrary.Shapes.Count}", HorizontalAlignment.Left, -1, 15, ReassemblyUi.TextWhite);
+        DrawString(_font, new Vector2(PaletteX + 210, 120), $"R {Progress.Resources}", HorizontalAlignment.Left, -1, 13, Amber);
         DrawLine(new Vector2(PaletteX + 14, 130), new Vector2(PaletteX + PaletteWidth - 14, 130), ReassemblyUi.CyanGrid, 1.0f);
-        DrawString(_font, new Vector2(PaletteX + 16, 146), "SELECT BLOCK // CONNECT VIA PORTS", HorizontalAlignment.Left, -1, 10, ReassemblyUi.TextMuted);
+        _categoryButtons.Clear();
+        var categories = new[] { "全部" }.Concat(ShipShapeLibrary.Shapes.Values.Select(s => s.Category).Distinct()).ToArray();
+        for (var i = 0; i < categories.Length; i++)
+        {
+            var rect = new Rect2(PaletteX + 12 + i % 5 * 56, 138 + i / 5 * 18, 54, 17);
+            _categoryButtons.Add((rect, categories[i]));
+            DrawString(_font, rect.Position + new Vector2(2, 12), categories[i], fontSize: 10,
+                modulate: categories[i] == _catalogCategory ? Amber : MutedText);
+        }
 
         _paletteButtons.Clear();
-        var y = 158.0f;
-        foreach (var group in ShipShapeLibrary.BuildOrder.GroupBy(id => ShipShapeLibrary.Get(id).Category))
+        var catalog = FilteredCatalog();
+        _catalogPage = Math.Clamp(_catalogPage, 0, Math.Max(0, (catalog.Length - 1) / PageSize));
+        var index = 0;
+        foreach (var shapeId in catalog.Skip(_catalogPage * PageSize).Take(PageSize))
         {
-            DrawString(_font, new Vector2(PaletteX + 16, y + 12), group.Key.ToUpperInvariant(), HorizontalAlignment.Left, -1, 10, ReassemblyUi.CyanHighlight * 0.85f);
-            y += 14.0f;
-
-            var col = 0;
-            foreach (var shapeId in group)
-            {
+                var col = index % 2;
+                var y = 198 + index / 2 * 26;
+                index++;
                 var spec = ShipShapeLibrary.Get(shapeId);
                 var x = PaletteX + 12 + col * 140;
                 var selected = shapeId == _selectedShapeId;
@@ -750,19 +792,17 @@ public partial class ShipBuilder : Node2D
                 DrawColoredPolygon(preview, spec.Color.Lerp(new Color("#0a141d"), 0.25f));
                 DrawPolyline(preview.Append(preview[0]).ToArray(), selected ? ReassemblyUi.CyanHighlight : new Color("#7ca0b0", 0.6f), 1.0f);
 
-                DrawString(_font, new Vector2(x + 28, y + 16), spec.Label, HorizontalAlignment.Left, -1, 10,
-                    selected ? ReassemblyUi.TextWhite : ReassemblyUi.TextSteel);
-
-                col++;
-                if (col == 2)
-                {
-                    col = 0;
-                    y += 27.0f;
-                }
-            }
-            if (col != 0)
-                y += 27.0f;
+                var label = (Progress.CanBuild(shapeId) ? "" : "锁 ") + spec.Label;
+                if (label.Length > 13) label = label[..12] + "…";
+                DrawString(_font, new Vector2(x + 28, y + 16), label, HorizontalAlignment.Left, -1, 10,
+                    Progress.CanBuild(shapeId) ? ReassemblyUi.TextSteel : Amber);
         }
+        DrawString(_font, new Vector2(PaletteX + 16, 594), "< 上页", fontSize: 12, modulate: Telemetry);
+        DrawString(_font, new Vector2(PaletteX + 100, 594), $"{_catalogPage + 1}/{Math.Max(1, (catalog.Length + PageSize - 1) / PageSize)}", fontSize: 12, modulate: MutedText);
+        DrawString(_font, new Vector2(PaletteX + 224, 594), "下页 >", fontSize: 12, modulate: Telemetry);
+        var selectedSpec = ShipShapeLibrary.Get(_selectedShapeId);
+        DrawString(_font, new Vector2(PaletteX + 16, 624), Progress.CanBuild(_selectedShapeId) ? "已解锁" : $"[U / 点击] 解锁 {PlayerProgress.UnlockCost(selectedSpec)} R", fontSize: 13, modulate: Amber);
+        DrawString(_font, new Vector2(PaletteX + 16, 644), _technologyNotice, fontSize: 10, modulate: MutedText);
 
         var statsY = ViewHeight - 64.0f;
         DrawLine(new Vector2(PaletteX + 12, statsY - 8), new Vector2(PaletteX + PaletteWidth - 12, statsY - 8), ReassemblyUi.CyanGrid, 1.0f);
@@ -786,7 +826,7 @@ public partial class ShipBuilder : Node2D
         ReassemblyUi.DrawChamferFrame(this, hudRect, ReassemblyUi.VoidDark, ReassemblyUi.CyanMuted * 0.7f, 8.0f, true, 1.2f);
 
         DrawString(_font, new Vector2(34, 122), "SHIP CONSTRUCTION // REASSEMBLY DOCK", HorizontalAlignment.Left, -1, 10, ReassemblyUi.CyanHighlight);
-        DrawString(_font, new Vector2(34, 148), sel.Label, HorizontalAlignment.Left, -1, 18, ReassemblyUi.TextWhite);
+        DrawString(_font, new Vector2(34, 148), sel.Label.Length > 25 ? sel.Label[..24] + "…" : sel.Label, HorizontalAlignment.Left, -1, 16, ReassemblyUi.TextWhite);
         DrawString(_font, new Vector2(34, 169), ModuleBrief(sel), HorizontalAlignment.Left, 320, 11, ReassemblyUi.TextSteel);
 
         var twrRatio = Mathf.Clamp(_ship.TotalThrust / Mathf.Max(1.0f, _ship.TotalMass * 2.5f), 0.0f, 1.0f);

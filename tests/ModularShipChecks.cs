@@ -193,6 +193,8 @@ public partial class ModularShipChecks : Node
         builder.Ship.Restore(stack);
         foreach (var size in new[] { "thruster_medium", "thruster_large" })
         {
+            builder.Progress.Collect(1000);
+            Check(builder.Progress.TryUnlock(size), "Engine placement fixture purchases its technology");
             builder.FocusShip();
             var host = builder.Ship.Blocks.Last();
             var (position, angle) = ModularShip.SnapBlock(ShipShapeLibrary.Get(size).Ports[0],

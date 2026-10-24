@@ -110,6 +110,7 @@ public static class ModularShipVisual
             item.Outline[^1] = vertices[0];
 
             var color = spec.Color.Lerp(new Color("#172431"), 0.32f);
+            color = color.Lerp(new Color("#5e292b"), 0.65f * (1 - Mathf.Clamp(block.Health / spec.Hull, 0, 1)));
             if (!block.Enabled || !mainComponent.Contains(block))
                 color = color.Darkened(0.55f);
 

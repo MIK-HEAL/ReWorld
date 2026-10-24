@@ -62,6 +62,7 @@ public partial class UniverseView : Node2D
     public void SetShip(ModularShip ship)
     {
         _ship = ship;
+        BindCombatShip();
         RefreshFlightProfile();
     }
 
@@ -124,18 +125,18 @@ public partial class UniverseView : Node2D
     public override void _PhysicsProcess(double delta)
     {
         if (_ship is not null && _flightProfile.Revision != _ship.Revision) RefreshFlightProfile();
-        if (UpdateWorldPhysics((float)delta)) return;
+        if (UpdateWorldPhysics((float)delta)) { TickCombat((float)delta); return; }
         _previousPlayerPosition = _playerPosition;
         _previousPlayerHeading = _playerHeading;
         // 固定物理步进；高推力、小惯量舰体在低帧率下也能稳定反推制动。
         var elapsed = (float)Math.Min(delta, 0.1);
         var steps = Math.Max(1, Mathf.CeilToInt(elapsed * 120));
         var dt = elapsed / steps;
-        var controls = _chartOpen ? default : ShipFlightController.ReadControls();
+        var controls = _chartOpen || _tableOpen || _diplomacyOpen || _ship is { HasLiveCore: false } ? default : ShipFlightController.ReadControls();
         for (var i = 0; i < steps; i++)
         {
             Vector2? aim = null;
-            if (!_chartOpen && _pointerScreen is { } pointer && !MiniMapRect.HasPoint(pointer))
+            if (!_chartOpen && !_tableOpen && !_diplomacyOpen && _pointerScreen is { } pointer && !MiniMapRect.HasPoint(pointer))
             {
                 var fromShip = pointer - WorldToScreen(_visualPlayerPosition);
                 if (fromShip.LengthSquared() > 16 * 16) aim = fromShip;
@@ -157,6 +158,7 @@ public partial class UniverseView : Node2D
             foreach (var body in _visibleBodies)
                 UniverseNavigation.ResolveSurface(body, shipRadius, ref _playerPosition, ref _playerVelocity);
         }
+        TickCombat(elapsed);
     }
 
     internal void UpdateRenderTransform(float fraction)
@@ -306,6 +308,7 @@ public partial class UniverseView : Node2D
         DrawSectorGrid();
         DrawGravityRanges(worldView);
         DrawTraffic(worldView);
+        DrawCombatWorld(worldView);
         DrawPlayer();
         DrawSetTransform(Vector2.Zero, 0.0f, Vector2.One);
 
@@ -592,7 +595,7 @@ public partial class UniverseView : Node2D
             : "WASD MOVE · CURSOR AIM · Q/E STRAFE";
         DrawString(_font, new Vector2(16, ViewHeight - 44), $"PILOT [{_pilot.SchemeLabel.ToUpperInvariant()}] // {driveHint} · [R] TOGGLE SCHEME",
             HorizontalAlignment.Left, -1, 11, ReassemblyUi.TextSteel);
-        DrawString(_font, new Vector2(16, ViewHeight - 22), "[M] SHIPYARD · [J] HYPERDRIVE · [H] DOCK STATION · [SCROLL] ZOOM",
+        DrawString(_font, new Vector2(16, ViewHeight - 22), "[M] 造舰 · [J] 迁跃 · [H] 标记站点 · [F] 停靠 · [V] 派系 · [TAB] 指挥 · [SCROLL] 缩放",
             HorizontalAlignment.Left, -1, 11, ReassemblyUi.CyanMuted);
 
         Vector2? targetScreen = _targetBody is { } tb ? WorldToScreen(tb.Position) : null;

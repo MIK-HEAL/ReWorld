@@ -10,11 +10,13 @@ public partial class Main : Node2D
 
     public override void _Ready()
     {
-        _shipBuilder = new ShipBuilder { Name = "ShipBuilder" };
+        var progress = PlayerProgress.Load();
+        progress.Autosave = true;
+        _shipBuilder = new ShipBuilder { Name = "ShipBuilder", Progress = progress };
         _shipBuilder.Ship.SeedReferenceShip();
         AddChild(_shipBuilder);
 
-        _universe = new UniverseView { Name = "Universe" };
+        _universe = new UniverseView { Name = "Universe", Progress = progress };
         _universe.SetShip(_shipBuilder.Ship);
         AddChild(_universe);
         SetPage(_shipBuilder, false);

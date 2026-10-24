@@ -26,8 +26,9 @@ public partial class UniverseView
     public UniverseTraffic Traffic => _traffic;
     public bool IsDocked => _dockedStation is not null;
     public bool ChartOpen => _chartOpen;
-    public bool TravelLocksBuilder => _warp.LocksFlight;
-    public void CloseNavigationOverlays() => _chartOpen = false;
+    public bool TravelLocksBuilder => _warp.LocksFlight || _ship is { HasLiveCore: false } ||
+        _traffic.Vessels.Any(v => v.Alive && Progress.Diplomacy.AtWar(1, v.FactionId) && v.Position.DistanceTo(_playerPosition) < 1500);
+    public void CloseNavigationOverlays() { _chartOpen = false; CloseCampaignOverlays(); }
     public double FrameMedianMs => _median;
     public double FrameP95Ms => _p95;
     public int RetainedDrawCount => _retainedBodies.Values.Sum(v => v.DrawCount);
@@ -37,6 +38,7 @@ public partial class UniverseView
         _bodyLayer = new Node2D { Name = "RetainedCelestials", ShowBehindParent = true };
         AddChild(_bodyLayer);
         _traffic.Load(UniverseGenerator.WorldToSystemCell(_playerPosition), _playerPosition);
+        InitializeCampaign();
     }
 
     private void SyncRetainedBodies()
@@ -177,6 +179,9 @@ public partial class UniverseView
             return true;
         }
         var station = NearestStation();
+        if (station is not null && (Progress.Diplomacy.AtWar(1, FactionRelations.League) ||
+            _traffic.StationActors.TryGetValue(station.Id, out var actor) && !actor.Alive))
+        { Notify("交战或已摧毁的空间站无法停靠"); return false; }
         if (station is null || station.SurfaceDistance(_playerPosition) > 700)
         { Notify("靠近空间站至 700 距离内再按 F · H 标记空间站"); return false; }
         if (_playerVelocity.Length() > 180) { Notify("停靠需减速至 180 以下"); return false; }
@@ -234,6 +239,7 @@ public partial class UniverseView
 
     private bool HandleWorldInput(InputEvent input)
     {
+        if (HandleCampaignInput(input)) return true;
         if (input is InputEventKey { Pressed: true, Echo: false } key)
         {
             // Main owns page/fullscreen shortcuts, including while this modal is open.
@@ -287,18 +293,19 @@ public partial class UniverseView
                 ModularShipVisual.Draw(this, v.Ship, Vector2.Zero, Mathf.LerpAngle(v.PreviousHeading, v.Heading, fraction), thrusterActivity: v.Activity);
             }
             DrawSetTransform(new Vector2(ViewWidth, ViewHeight) * 0.5f - _cameraPosition * _cameraZoom, 0, Vector2.One * _cameraZoom);
-            DrawCircle(position, 65, new Color("#66d9b0", 0.4f), false, 1 / _cameraZoom);
+            if (v.Alive) DrawCircle(position, v.Radius + 15, FactionColor(v.FactionId), false, 1 / _cameraZoom);
         }
     }
     private void DrawWorldOverlays()
     {
         foreach (var v in _traffic.Vessels)
         {
+            if (!v.Alive) continue;
             var point = WorldToScreen(v.PreviousPosition.Lerp(v.Position, (float)Engine.GetPhysicsInterpolationFraction()));
             if (new Rect2(320, 90, 680, 470).HasPoint(point) && _cameraZoom > 0.18f)
-                DrawString(_font, point + new Vector2(-60, -42), v.Name, HorizontalAlignment.Center, 120, 11, new Color("#66d9b0"));
+                DrawString(_font, point + new Vector2(-80, -42), $"{v.Name} · {FactionRelations.Label(Progress.Diplomacy.Get(1, v.FactionId))}", HorizontalAlignment.Center, 160, 11, FactionColor(v.FactionId));
             var map = MiniMapPoint(v.Position);
-            if (MiniMapRect.Grow(-4).HasPoint(map)) DrawCircle(map, 2, new Color("#66d9b0"));
+            if (MiniMapRect.Grow(-4).HasPoint(map)) DrawCircle(map, 2, FactionColor(v.FactionId));
         }
         if (_noticeTime > 0 && !_chartOpen)
             DrawString(_font, new Vector2(330, 94), _notice, HorizontalAlignment.Center, 650, 14, ReassemblyUi.CyanHighlight);
@@ -313,6 +320,7 @@ public partial class UniverseView
             DrawString(_font, new Vector2(340, 120), $"F3 帧时间 P50 {_median:0.0}ms / P95 {_p95:0.0}ms · {Engine.GetFramesPerSecond()} FPS · 静态绘制 {RetainedDrawCount}", fontSize: 13, modulate: Colors.LightGreen);
         if (_warp.State != WarpDrive.Phase.Ready) DrawWarpEffect();
         if (_chartOpen) DrawWarpChart();
+        DrawCampaignOverlays();
     }
     private void DrawWarpChart()
     {

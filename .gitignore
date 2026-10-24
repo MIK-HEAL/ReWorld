@@ -16,3 +16,4 @@ docs/
 # 含商业游戏 (Steam AppID 329130, Anisoptera Games) 的逆向分析与拷贝数据，
 # 出于版权考虑不提交到任何远程仓库。本地副本在 D:/MyProject/hackson/ReWorld/Reassembly/。
 Reassembly/
+data/reassembly/
