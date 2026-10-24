@@ -44,7 +44,7 @@ public static partial class ShipShapeLibrary
         foreach (var entry in entries)
         {
             // Keep the existing ReWorld equipment and its verified engine/core geometry stable.
-            if (shapes.Values.Any(s => s.NumId == entry.Id)) continue;
+            if (shapes.ContainsKey($"ra_{entry.Id}")) continue;
             var flags = ConvertFeatures(entry.Features);
             var name = string.IsNullOrWhiteSpace(entry.Name) ? $"方块 {entry.Id}" : entry.Name;
             if (entry.Thrust > 0) flags |= BlockFeatures.Thruster;
@@ -54,11 +54,12 @@ public static partial class ShipShapeLibrary
                 : name.Contains("Defense", StringComparison.OrdinalIgnoreCase) ? WeaponKind.PointDefense : WeaponKind.Cannon;
             var sides = entry.Shape switch { 2 => 3, 3 => 6, 5 => 6, 6 or 13 => 5, 7 => 3, 49 => 7, 60 or 61 => 4, _ => 4 };
             var scale = Math.Clamp(entry.Scale, 1, 4);
-            var geometry = MakeRegular("reference", entry.Id, name, "", entry.Color, flags, sides, nativeScale: scale);
-            if (entry.Shape == 8) geometry = MakeCommand();
+            var geometry = MakeRegular("reference", entry.Id, name, "", entry.Color, flags, sides,
+                nativeScale: scale, isRegistered: entry.Registration);
+            if (entry.Shape == 8) geometry = MakeCommand(entry.Registration);
             if (entry.Shape == 18) geometry = MakeThruster("reference", entry.Id, name, scale,
                 scale <= 2 ? 4.5f : scale == 3 ? 7.5f : 10, scale <= 2 ? 4.194999695f : scale == 3 ? 10 : 15,
-                scale <= 2 ? 130 : 150, entry.Thrust, 5, 25);
+                scale <= 2 ? 130 : 150, entry.Thrust, 5, 25, entry.Registration);
             var category = (flags & BlockFeatures.Command) != 0 ? "核心" : (flags & BlockFeatures.Weapon) != 0 ? "武器"
                 : (flags & BlockFeatures.Thruster) != 0 ? "机动" : (flags & BlockFeatures.Shield) != 0 ? "防御"
                 : (flags & BlockFeatures.Generator) != 0 ? "能源" : (flags & BlockFeatures.Factory) != 0 ? "制造"
@@ -67,6 +68,7 @@ public static partial class ShipShapeLibrary
             shapes.Add(id, new ShapeSpec
             {
                 Id = id, NumId = entry.Id, Label = name, Category = category, ColorUint = entry.Color,
+                IsRegistered = entry.Registration,
                 SourceFaction = entry.Faction, NativeShape = entry.Shape,
                 ReferenceGeometry = entry.Shape is 8 or 18,
                 Description = entry.Description + (entry.Registration ? "" : " · 原舰引用的方块；完整规格待还原"),
@@ -85,6 +87,9 @@ public static partial class ShipShapeLibrary
                 ShieldStrength = 100 * scale, ShieldRadius = Math.Max(80, geometry.Radius * 2), ShieldRegen = 10 * scale,
             });
         }
+        ApplyGroundTruthCatalog(shapes);
+        RegisteredCount += shapes.Values.Count(s => s.NumId is >= 47 and <= 69);
+        ReferencedCount = shapes.Values.Count;
         return shapes;
     }
 

@@ -24,7 +24,7 @@ public partial class FactionCombatChecks : Node
     {
         try
         {
-            Catalog(); Technology(); DiplomacyAndWeapons(); DamageAndResources(); Campaign();
+            Catalog(); GroundTruthCatalog(); Technology(); DiplomacyAndWeapons(); DamageAndResources(); Campaign();
             GD.Print($"FACTION_COMBAT_CHECKS_PASS: {_checks} assertions; catalog={ShipShapeLibrary.Shapes.Count}, registrations={ShipShapeLibrary.RegisteredCount}");
             GetTree().Quit();
         }
@@ -33,7 +33,11 @@ public partial class FactionCombatChecks : Node
     private void Catalog()
     {
         Check(ShipShapeLibrary.ReferencedCount >= 483, "Every source ID is represented in the catalog");
-        Check(ShipShapeLibrary.BuildOrder.Distinct().Count() == ShipShapeLibrary.Shapes.Count, "Every module has one accessible palette entry");
+        Check(ShipShapeLibrary.BuildOrder.Distinct().Count() == ShipShapeLibrary.BuildOrder.Length
+            && ShipShapeLibrary.BuildOrder.All(id => ShipShapeLibrary.Get(id).IsRegistered),
+            "The build catalog contains only registered modules with complete source records");
+        Check(ShipShapeLibrary.BuildOrder.Select(id => ShipShapeLibrary.Get(id).NumId).Distinct().Count() == ShipShapeLibrary.BuildOrder.Length,
+            "Registered source modules appear only once in the build catalog");
         var known = ShipShapeLibrary.Shapes.Values.Select(s => s.NumId).ToHashSet();
         foreach (var folder in new[] { "ships", "extra_ships", "blockfonts", "backup_agents" })
         foreach (var path in System.IO.Directory.EnumerateFiles(ProjectSettings.GlobalizePath($"res://Reassembly/reference/{folder}"), "*.lua", System.IO.SearchOption.AllDirectories))
@@ -49,26 +53,63 @@ public partial class FactionCombatChecks : Node
         Check(omitted.ToShip().Blocks.Count == 2, "Imported blocks are retained in runtime ships");
         Check(ShipShapeLibrary.Shapes.Values.All(s => s.Vertices().Length >= 3 && s.Ports.Count > 0 && s.Hull > 0 && s.Mass > 0), "Catalog geometry is usable for editing and damage");
     }
+
+    private void GroundTruthCatalog()
+    {
+        var exact = ShipShapeLibrary.Shapes.Values.Where(s => s.NumId is >= 47 and <= 69).ToArray();
+        Check(exact.Length == 23, "The exported player-faction block set is fully migrated");
+        Check(ShipShapeLibrary.BuildOrder.Count(id => ShipShapeLibrary.Get(id).HasGroundTruth) == 23 &&
+            ShipShapeLibrary.BuildOrder.All(id => ShipShapeLibrary.Get(id).HasGroundTruth || id == "hyperdrive"),
+            "Only exported native modules and the project-specific travel drive are offered to players");
+        var boost = ShipShapeLibrary.Get("ra_50");
+        Check(boost.IsRegistered, "Exported player modules are eligible for the original upgrade catalog");
+        Check(boost.NativeShapeName == "THRUSTER_NOSTACK" && boost.Scale == 2 && boost.Thrust == 500000,
+            "Booster keeps native shape, scale and force");
+        Check(Mathf.Abs(boost.ThrusterColor.A - 0x90 / 255.0f) < 0.001f && boost.FillColor1Uint == 0x3D4F80,
+            "Booster keeps alpha-bearing exhaust and iridescent fill colors");
+        var shield = ShipShapeLibrary.Get("ra_51");
+        Check(shield.Shield is not null && shield.Shield.Strength == 1000 && shield.Shield.Regen == 200,
+            "Shield substructure is available to combat");
+        var missile = ShipShapeLibrary.Get("ra_59");
+        Check(missile.NativeShapeName == "RECT_LAUNCHER" && missile.ReplicateBlock is not null &&
+            missile.ReplicateBlock.ShapeName == "MISSILE" && missile.ReplicateBlock.ExplodeDamage == 30,
+            "Launcher keeps its own native shape separately from its nested missile payload");
+        var antimatter = ShipShapeLibrary.Get("ra_66");
+        Check(antimatter.Cannon is not null && antimatter.Cannon.Damage == 500 && antimatter.Shrouds.Count == 2,
+            "Cannon stats and barrel shrouds are available to rendering");
+        Check(antimatter.Shrouds[1].Offset.X == 6 && antimatter.Shrouds[0].Size == new Vector2(10, 5) &&
+            ShipShapeLibrary.Get("ra_68").BarrelOffset == new Vector2(-1, 0),
+            "Weapon accessories retain positions, dimensions and barrel offsets from the mod export");
+        Check(!ShipShapeLibrary.BuildOrder.Contains("ra_228") && !progressCanBuildLegacy(),
+            "Undecoded catalog approximations cannot leak back into the player upgrade catalog");
+        var triangle = ShipShapeLibrary.Get("ra_58");
+        var centroid = triangle.Vertices().Aggregate(Vector2.Zero, (sum, vertex) => sum + vertex) / triangle.Vertices().Length;
+        Check(centroid.Length() < 0.01f && triangle.NativeShapeName == "RIGHT_TRI",
+            "Legacy polygon geometry is centered on its native rotation origin");
+
+        static bool progressCanBuildLegacy() => new PlayerProgress().CanBuild("ra_228");
+    }
     private void Technology()
     {
         var progress = new PlayerProgress { Resources = 0 };
-        Check(!progress.CanBuild("shield") && !progress.TryUnlock("shield") && progress.Resources == 0, "Insufficient resources cannot unlock or debit");
-        var cost = PlayerProgress.UnlockCost(ShipShapeLibrary.Get("shield"));
+        Check(!progress.CanBuild("ra_51") && !progress.TryUnlock("ra_51") && progress.Resources == 0, "Insufficient resources cannot unlock or debit");
+        var cost = PlayerProgress.UnlockCost(ShipShapeLibrary.Get("ra_51"));
         progress.Collect(cost);
-        Check(progress.TryUnlock("shield") && progress.CanBuild("shield") && progress.Resources == 0, "Unlock spends exact resources");
-        Check(progress.TryUnlock("shield") && progress.Resources == 0, "Repeated unlock is free and idempotent");
+        Check(progress.TryUnlock("ra_51") && progress.CanBuild("ra_51") && progress.Resources == 0, "Unlock spends exact resources");
+        Check(progress.TryUnlock("ra_51") && progress.Resources == 0, "Repeated unlock is free and idempotent");
+        var upgrades = new UpgradeScreen { Progress = progress }; AddChild(upgrades);
+        Check(!upgrades.TryPurchase("ra_57"), "Upgrade screen cannot decrypt without sufficient resources");
+        progress.Collect(PlayerProgress.UnlockCost(ShipShapeLibrary.Get("ra_57")));
+        Check(upgrades.TryPurchase("ra_57"), "Upgrade screen permanently decrypts purchased modules");
         var builder = new ShipBuilder { Progress = progress }; AddChild(builder);
-        builder.SelectShape("beam");
-        Check(!builder.UnlockSelected(), "Editor cannot bypass purchase gate");
-        progress.Collect(PlayerProgress.UnlockCost(ShipShapeLibrary.Get("beam")));
-        Check(builder.UnlockSelected(), "Editor purchases selected module");
+        builder.SelectShape("ra_57");
         builder._Input(new InputEventKey { Keycode = Key.Z, CtrlPressed = true, Pressed = true });
-        Check(progress.CanBuild("beam") && progress.Resources == 0, "Blueprint undo cannot refund permanent technology");
+        Check(progress.CanBuild("ra_57") && progress.Resources == 0, "Blueprint undo cannot refund permanent technology");
         var path = "res://.godot/faction-progress-test.json";
         progress.Diplomacy.Set(1, 8, DiplomaticState.War); progress.MinedDeposits.Add("test-ore"); progress.Save(path);
         var loaded = PlayerProgress.Load(path);
-        Check(loaded.CanBuild("beam") && loaded.Resources == 0 && loaded.Diplomacy.AtWar(8, 1) && loaded.MinedDeposits.Contains("test-ore"), "Currency, technology, diplomacy and mining survive save reload");
-        builder.QueueFree();
+        Check(loaded.CanBuild("ra_57") && loaded.Resources == 0 && loaded.Diplomacy.AtWar(8, 1) && loaded.MinedDeposits.Contains("test-ore"), "Currency, technology, diplomacy and mining survive save reload");
+        builder.QueueFree(); upgrades.QueueFree();
     }
     private void DiplomacyAndWeapons()
     {
@@ -102,7 +143,7 @@ public partial class FactionCombatChecks : Node
         Check(!empty.Projectiles.Any(p => p.Owner == a), "No energy means no shot");
 
         var shielded = Vessel(8, new Vector2(300, 0));
-        Attach(shielded.Ship, shielded.Ship.Core!, 0, "shield", 4); shielded.Refresh();
+        Attach(shielded.Ship, shielded.Ship.Core!, 0, "ra_51", 0); shielded.Refresh();
         var hull = shielded.Ship.Blocks.Sum(x => x.Health);
         var shield = shielded.Shield;
         empty.ApplyDamage(shielded, null, 20, Vector2.Right);
@@ -110,7 +151,7 @@ public partial class FactionCombatChecks : Node
         new CombatWorld().Step(0.1f, new[] { shielded }, relations);
         Check(shielded.Shield > shield - 20, "Connected shields regenerate using energy");
         var beamShip = Vessel(1, Vector2.Zero);
-        var cannon = beamShip.Ship.Blocks.First(x => x.ShapeId == "cannon");
+        var cannon = beamShip.Ship.Blocks.First(x => x.Spec.NumId == 56);
         var pos = cannon.Position; var angle = cannon.Angle; beamShip.Ship.RemoveBlock(cannon); beamShip.Ship.AddBlock("beam", pos, angle);
         relations.Set(1, 3, DiplomaticState.War);
         var lasers = new CombatWorld(); lasers.Step(0.016f, new[] { beamShip, c }, relations);

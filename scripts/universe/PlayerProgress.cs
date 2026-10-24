@@ -9,7 +9,7 @@ using FileAccess = Godot.FileAccess;
 public sealed class PlayerProgress
 {
     public int Resources { get; set; } = 250;
-    public HashSet<int> Unlocked { get; set; } = new() { 200, 219, 202, 217, 218, 205, 201, 30001 };
+    public HashSet<int> Unlocked { get; set; } = new() { 47, 48, 49, 54, 56, 58, 60, 30001 };
     public FactionRelations Diplomacy { get; set; } = new();
     public bool Established { get; set; }
     public float BaseX { get; set; }
@@ -19,13 +19,14 @@ public sealed class PlayerProgress
     public event Action? Changed;
     public bool Autosave { get; set; }
     private const string SavePath = "user://reworld_campaign.json";
-    public bool CanBuild(string id) => Unlocked.Contains(ShipShapeLibrary.Get(id).NumId);
+    public bool CanBuild(string id) => ShipShapeLibrary.BuildOrder.Contains(id) &&
+        ShipShapeLibrary.Shapes.TryGetValue(id, out var spec) && Unlocked.Contains(spec.NumId);
     public static int UnlockCost(ShipShapeLibrary.ShapeSpec spec)
         => Math.Max(40, (int)(spec.Mass * 8 + (spec.IsWeapon ? spec.Damage * 5 : 0)
             + ((spec.Features & (BlockFeatures.Shield | BlockFeatures.Factory)) != 0 ? 200 : 0)));
     public bool TryUnlock(string id)
     {
-        if (!ShipShapeLibrary.Shapes.TryGetValue(id, out var spec)) return false;
+        if (!ShipShapeLibrary.BuildOrder.Contains(id) || !ShipShapeLibrary.Shapes.TryGetValue(id, out var spec)) return false;
         if (Unlocked.Contains(spec.NumId)) return true;
         var cost = UnlockCost(spec);
         if (Resources < cost) return false;
@@ -66,6 +67,11 @@ public sealed class PlayerProgress
             progress.Resources = Math.Max(0, progress.Resources);
             progress.Unlocked ??= new(); progress.Diplomacy ??= new(); progress.Diplomacy.States ??= new();
             progress.MinedDeposits ??= new(); progress.FleetDesigns ??= new();
+            if (progress.Unlocked.Contains(200)) progress.Unlocked.Add(47);
+            if (progress.Unlocked.Contains(219)) progress.Unlocked.Add(48);
+            if (progress.Unlocked.Contains(202)) progress.Unlocked.Add(54);
+            if (progress.Unlocked.Contains(218)) progress.Unlocked.Add(56);
+            if (progress.Unlocked.Contains(205)) progress.Unlocked.Add(49);
             return progress;
         }
         catch (JsonException) { GD.PushWarning("进度存档无效，已使用初始进度"); return new(); }

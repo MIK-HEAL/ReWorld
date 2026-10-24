@@ -36,7 +36,7 @@ public partial class ShipBuilder : Node2D
     private static readonly Color Amber = new("#e1a71c");
 
     private readonly ModularShip _ship = new();
-    private string _selectedShapeId = "hull";
+    private string _selectedShapeId = "ra_48";
     private float _previewAngle;
     private Vector2 _cameraPosition = Vector2.Zero;
     private float _cameraZoom = 1.0f;
@@ -73,21 +73,14 @@ public partial class ShipBuilder : Node2D
     public PlayerProgress Progress { get; set; } = new();
     private int _catalogPage;
     private string _catalogCategory = "全部";
-    private string _technologyNotice = "选择模块 · U 花费 R 永久解锁";
+    private string _technologyNotice = "未解密模块请按 U 前往升级界面";
     private const int PageSize = 28;
     private readonly List<(Rect2 Rect, string Category)> _categoryButtons = new();
     private string[] FilteredCatalog() => ShipShapeLibrary.BuildOrder.Where(id => _catalogCategory == "全部" ||
         ShipShapeLibrary.Get(id).Category == _catalogCategory).ToArray();
-    public bool UnlockSelected()
-    {
-        var unlocked = Progress.TryUnlock(_selectedShapeId);
-        _technologyNotice = unlocked ? "科技已解锁，可重复建造" : $"资源不足，需要 {PlayerProgress.UnlockCost(ShipShapeLibrary.Get(_selectedShapeId))} R";
-        return unlocked;
-    }
-
     public void SelectShape(string shapeId)
     {
-        if (!ShipShapeLibrary.Shapes.ContainsKey(shapeId)) return;
+        if (!ShipShapeLibrary.BuildOrder.Contains(shapeId)) return;
         _selectedShapeId = shapeId;
         _selection = null;
     }
@@ -161,9 +154,9 @@ public partial class ShipBuilder : Node2D
             return null;
 
         // 无核心时，核心方块可直接放在光标处。
-        if (shapeId == "core" && _ship.Core is null)
+        if (spec.IsCore && _ship.Core is null)
             return (worldPos, angle, true);
-        if (shapeId == "core" && ignore is null) return null;
+        if (spec.IsCore && ignore is null) return null;
 
         var snapThreshold = 28.0f / _cameraZoom; // 保持屏幕像素内吸附距离稳定。
 
@@ -284,7 +277,7 @@ public partial class ShipBuilder : Node2D
 
     private void ScaleEngine(int direction)
     {
-        var sizes = new[] { "thruster", "thruster_medium", "thruster_large" };
+        var sizes = new[] { "ra_60", "ra_54", "ra_53" };
         var index = Array.IndexOf(sizes, _selectedShapeId);
         if (index >= 0) _selectedShapeId = sizes[Math.Clamp(index + direction, 0, sizes.Length - 1)];
     }
@@ -389,7 +382,6 @@ public partial class ShipBuilder : Node2D
             return;
         }
         if (@event is not InputEventKey key || !key.Pressed || key.Echo) return;
-        if (key.Keycode == Key.U) { UnlockSelected(); return; }
         if (key.Keycode is Key.Pageup or Key.Pagedown)
         {
             _catalogPage = Math.Clamp(_catalogPage + (key.Keycode == Key.Pagedown ? 1 : -1), 0, Math.Max(0, (FilteredCatalog().Length - 1) / PageSize));
@@ -436,7 +428,7 @@ public partial class ShipBuilder : Node2D
 
     private void PlacePreview()
     {
-        if (!Progress.CanBuild(_selectedShapeId)) { _technologyNotice = "此模块尚未解锁 · U 购买科技"; return; }
+        if (!Progress.CanBuild(_selectedShapeId)) { _technologyNotice = "此模块尚未解密 · 按 U 查看升级"; return; }
         if (_snapPreview is not { Valid: true } snap) return;
         SaveUndo();
         _selection = _ship.AddBlock(_selectedShapeId, snap.Position, snap.Angle);
@@ -456,7 +448,6 @@ public partial class ShipBuilder : Node2D
             return false;
         if (new Rect2(PaletteX + 12, 576, 65, 26).HasPoint(screenPos)) { _catalogPage = Math.Max(0, _catalogPage - 1); return true; }
         if (new Rect2(PaletteX + 220, 576, 65, 26).HasPoint(screenPos)) { _catalogPage = Math.Min((FilteredCatalog().Length - 1) / PageSize, _catalogPage + 1); return true; }
-        if (new Rect2(PaletteX + 12, 606, 276, 26).HasPoint(screenPos)) { UnlockSelected(); return true; }
         foreach (var (rect, category) in _categoryButtons)
             if (rect.HasPoint(screenPos)) { _catalogCategory = category; _catalogPage = 0; return true; }
         foreach (var (rect, shapeId) in _paletteButtons)
@@ -553,15 +544,8 @@ public partial class ShipBuilder : Node2D
 
     private void DrawShip()
     {
-        // Connections sit behind the hull as thin energy rails.
-        foreach (var (a, b) in _ship.GetConnections())
-        {
-            DrawLine(a.Position, b.Position, new Color("#122c38", 0.9f), 8.0f / _cameraZoom);
-            DrawLine(a.Position, b.Position, new Color("#3c8c99", 0.55f), 1.5f / _cameraZoom);
-        }
-
         var components = _ship.GetConnectedComponents();
-        var mainComponent = components.FirstOrDefault(component => component.Any(block => block.ShapeId == "core")) ?? new List<ModularShip.Block>();
+        var mainComponent = components.FirstOrDefault(component => component.Any(block => block.Spec.IsCore)) ?? new List<ModularShip.Block>();
 
         foreach (var block in _ship.Blocks)
         {
@@ -570,46 +554,15 @@ public partial class ShipBuilder : Node2D
                 .Select(v => block.Position + v.Rotated(block.Angle))
                 .ToArray();
 
-            var color = spec.Color.Lerp(new Color("#172431"), 0.32f);
+            var color = ModularShipVisual.ResolveFillColor(spec, block.Id);
             if (!block.Enabled || !mainComponent.Contains(block))
                 color = color.Darkened(0.55f);
 
-            // A dark offset silhouette and an inset face turn the raw polygon into
-            // a manufactured module instead of a flat coloured tile.
-            var shadow = vertices.Select(v => v + new Vector2(3, 4) / _cameraZoom).ToArray();
-            DrawColoredPolygon(shadow, new Color("#010306", 0.78f));
             DrawColoredPolygon(vertices, color);
-            var inset = vertices.Select(v => block.Position + (v - block.Position) * 0.78f).ToArray();
-            DrawColoredPolygon(inset, color.Lightened(0.12f));
-            DrawPolyline(vertices.Append(vertices[0]).ToArray(), new Color("#9bbac1", 0.68f), 1.2f / _cameraZoom);
-            DrawPolyline(inset.Append(inset[0]).ToArray(), new Color("#0b1218", 0.92f), 1.0f / _cameraZoom);
-
-            DrawModuleDetail(block, inset);
-
-            // 核心：画个高亮菱形。
-            if (spec.IsCore)
-            {
-                var radius = spec.Radius * 0.4f;
-                var diamond = new[]
-                {
-                    block.Position + Vector2.Up * radius,
-                    block.Position + Vector2.Right * radius,
-                    block.Position + Vector2.Down * radius,
-                    block.Position + Vector2.Left * radius,
-                };
-                DrawPolyline(diamond.Append(diamond[0]).ToArray(), Amber, 1.8f / _cameraZoom);
-                DrawCircle(block.Position, radius * 0.38f, new Color("#8cf5e5", 0.14f));
-            }
-            else if (spec.IsThruster)
-            {
-                ModularShipVisual.DrawEngine(this, spec, block.Position, block.Angle);
-            }
-            else if (spec.IsWeapon)
-            {
-                // 武器：画炮口方向。
-                var dir = Vector2.Right.Rotated(block.Angle);
-                DrawLine(block.Position, block.Position + dir * spec.Radius, Amber, 2.0f / _cameraZoom);
-            }
+            var lineColor = spec.LineColor;
+            DrawPolyline(vertices.Append(vertices[0]).ToArray(), lineColor, 1.0f / _cameraZoom);
+            if (spec.IsWeapon || spec.Shrouds.Count > 0)
+                ModularShipVisual.DrawWeapon(this, spec, block.Position, block.Angle, 1.0f / _cameraZoom);
 
             // 未连接到主体的方块标记。
             if (!mainComponent.Contains(block))
@@ -619,55 +572,11 @@ public partial class ShipBuilder : Node2D
                 DrawLine(bbox + new Vector2(8, -8), bbox + new Vector2(-8, 8), new Color("#f07c8e", 0.8f), 2.0f);
             }
             if (block == _selection)
-            {
                 DrawPolyline(vertices.Append(vertices[0]).ToArray(), Amber, 2.4f / _cameraZoom);
-                DrawCircle(block.Position, spec.Radius * 0.16f, new Color("#f4c878", 0.2f), false, 1.5f / _cameraZoom);
-            }
         }
 
         // 端口标记（悬停吸附时高亮显示目标端口，或恒定显示自由端口）。
         DrawPortMarkers();
-    }
-
-    private void DrawModuleDetail(ModularShip.Block block, Vector2[] inset)
-    {
-        var center = block.Position;
-        var spec = block.Spec;
-        var axis = Vector2.Right.Rotated(block.Angle);
-        var cross = axis.Rotated(Mathf.Pi * 0.5f);
-        if (spec.IsCore)
-        {
-            DrawCircle(center, spec.Radius * 0.47f, new Color("#8ce8df", 0.12f), false, 2.0f / _cameraZoom);
-            DrawLine(center - axis * spec.Radius * 0.33f, center + axis * spec.Radius * 0.33f, Telemetry, 1.2f / _cameraZoom);
-            DrawLine(center - cross * spec.Radius * 0.33f, center + cross * spec.Radius * 0.33f, Telemetry, 1.2f / _cameraZoom);
-        }
-        else if (spec.IsThruster)
-        {
-            var exhaust = center + spec.ExhaustPosition.Rotated(block.Angle);
-            DrawLine(exhaust - cross * spec.ExhaustHalfWidth, exhaust + cross * spec.ExhaustHalfWidth, new Color("#a5eff2", 0.8f), 1.5f / _cameraZoom);
-            DrawLine(center - axis * spec.Radius * 0.28f, center + axis * spec.Radius * 0.28f, new Color("#8cc5cc", 0.7f), 1.0f / _cameraZoom);
-        }
-        else if (spec.IsWeapon)
-        {
-            var muzzle = center + spec.WeaponDirection.Rotated(block.Angle) * spec.Radius * 0.45f;
-            DrawCircle(muzzle, Math.Max(2.0f, spec.Radius * 0.1f), Amber, false, 1.4f / _cameraZoom);
-            DrawLine(center, muzzle, new Color("#f4d48a", 0.55f), 1.0f / _cameraZoom);
-        }
-        else if ((spec.Features & BlockFeatures.Generator) != 0)
-        {
-            DrawCircle(center, spec.Radius * 0.28f, new Color("#ffd279", 0.18f));
-            DrawArc(center, spec.Radius * 0.4f, -Mathf.Pi * 0.7f, Mathf.Pi * 0.55f, 12, Amber, 1.6f / _cameraZoom);
-        }
-        else if (spec.HasCircleShape || (spec.Features & BlockFeatures.Shield) != 0)
-        {
-            DrawArc(center, spec.Radius * 0.38f, 0.2f, Mathf.Pi * 1.8f, 18, Telemetry, 1.3f / _cameraZoom);
-        }
-        else
-        {
-            // Small hard-surface seams make repeated hull pieces read as a system.
-            DrawLine(center - axis * spec.Radius * 0.24f, center + axis * spec.Radius * 0.24f, new Color("#b0cbd0", 0.35f), 1.0f / _cameraZoom);
-            DrawCircle(center + cross * spec.Radius * 0.22f, 1.6f / _cameraZoom, new Color("#b0cbd0", 0.7f));
-        }
     }
 
     private void DrawPortMarkers()
@@ -755,11 +664,12 @@ public partial class ShipBuilder : Node2D
     {
         var panelRect = new Rect2(PaletteX, 92, PaletteWidth, ViewHeight - 108);
         ReassemblyUi.DrawChamferFrame(this, panelRect, ReassemblyUi.VoidDark, ReassemblyUi.CyanMuted * 0.7f, 10.0f, true, 1.2f);
-        DrawString(_font, new Vector2(PaletteX + 16, 120), $"方块目录 {ShipShapeLibrary.Shapes.Count}", HorizontalAlignment.Left, -1, 15, ReassemblyUi.TextWhite);
+        DrawString(_font, new Vector2(PaletteX + 16, 120), $"方块目录 {ShipShapeLibrary.BuildOrder.Length}", HorizontalAlignment.Left, -1, 15, ReassemblyUi.TextWhite);
         DrawString(_font, new Vector2(PaletteX + 210, 120), $"R {Progress.Resources}", HorizontalAlignment.Left, -1, 13, Amber);
         DrawLine(new Vector2(PaletteX + 14, 130), new Vector2(PaletteX + PaletteWidth - 14, 130), ReassemblyUi.CyanGrid, 1.0f);
         _categoryButtons.Clear();
-        var categories = new[] { "全部" }.Concat(ShipShapeLibrary.Shapes.Values.Select(s => s.Category).Distinct()).ToArray();
+        var categories = new[] { "全部" }.Concat(ShipShapeLibrary.BuildOrder.Select(ShipShapeLibrary.Get)
+            .Select(s => s.Category).Distinct()).ToArray();
         for (var i = 0; i < categories.Length; i++)
         {
             var rect = new Rect2(PaletteX + 12 + i % 5 * 56, 138 + i / 5 * 18, 54, 17);
@@ -788,20 +698,19 @@ public partial class ShipBuilder : Node2D
                 ReassemblyUi.DrawChamferFrame(this, rect, bg, border, 4.0f, false, selected ? 1.5f : 1.0f);
 
                 var previewCenter = new Vector2(x + 14, y + 12.0f);
-                var preview = spec.Vertices().Select(v => previewCenter + v * (8.0f / spec.Radius)).ToArray();
-                DrawColoredPolygon(preview, spec.Color.Lerp(new Color("#0a141d"), 0.25f));
-                DrawPolyline(preview.Append(preview[0]).ToArray(), selected ? ReassemblyUi.CyanHighlight : new Color("#7ca0b0", 0.6f), 1.0f);
+                ModularShipVisual.DrawIcon(this, spec, previewCenter, 8.0f, encrypted: !Progress.CanBuild(shapeId));
 
-                var label = (Progress.CanBuild(shapeId) ? "" : "锁 ") + spec.Label;
+                var unlocked = Progress.CanBuild(shapeId);
+                var label = spec.Label;
                 if (label.Length > 13) label = label[..12] + "…";
                 DrawString(_font, new Vector2(x + 28, y + 16), label, HorizontalAlignment.Left, -1, 10,
-                    Progress.CanBuild(shapeId) ? ReassemblyUi.TextSteel : Amber);
+                    unlocked ? ReassemblyUi.TextSteel : ReassemblyUi.TextMuted);
         }
         DrawString(_font, new Vector2(PaletteX + 16, 594), "< 上页", fontSize: 12, modulate: Telemetry);
         DrawString(_font, new Vector2(PaletteX + 100, 594), $"{_catalogPage + 1}/{Math.Max(1, (catalog.Length + PageSize - 1) / PageSize)}", fontSize: 12, modulate: MutedText);
         DrawString(_font, new Vector2(PaletteX + 224, 594), "下页 >", fontSize: 12, modulate: Telemetry);
         var selectedSpec = ShipShapeLibrary.Get(_selectedShapeId);
-        DrawString(_font, new Vector2(PaletteX + 16, 624), Progress.CanBuild(_selectedShapeId) ? "已解锁" : $"[U / 点击] 解锁 {PlayerProgress.UnlockCost(selectedSpec)} R", fontSize: 13, modulate: Amber);
+        DrawString(_font, new Vector2(PaletteX + 16, 624), Progress.CanBuild(_selectedShapeId) ? "已解密" : "模块规格已加密 · 按 U 查看升级", fontSize: 12, modulate: Progress.CanBuild(_selectedShapeId) ? Telemetry : MutedText);
         DrawString(_font, new Vector2(PaletteX + 16, 644), _technologyNotice, fontSize: 10, modulate: MutedText);
 
         var statsY = ViewHeight - 64.0f;
@@ -835,26 +744,40 @@ public partial class ShipBuilder : Node2D
 
         DrawString(_font, new Vector2(34, 202), $"ANGLE {Mathf.RadToDeg(_previewAngle):0}°   MIRROR {(_mirrorMode ? "[ACTIVE]" : "[OFF]")}", HorizontalAlignment.Left, -1, 10, _mirrorMode ? ReassemblyUi.TacticalAmber : ReassemblyUi.TextMuted);
 
-        DrawString(_font, new Vector2(18, ViewHeight - 22), "[LMB] ATTACH / DRAG    [RMB / Q / E] ROTATE    [X] MIRROR    [F] RE-CENTER    [SCROLL] ZOOM", HorizontalAlignment.Left, -1, 11, ReassemblyUi.TextSteel);
+        DrawString(_font, new Vector2(18, ViewHeight - 22), "[LMB] ATTACH / DRAG    [RMB / Q / E] ROTATE    [X] MIRROR    [F] RE-CENTER    [U] UPGRADES", HorizontalAlignment.Left, -1, 11, ReassemblyUi.TextSteel);
         DrawString(_font, new Vector2(ViewWidth - 192, ViewHeight - 22), "REWORLD // SHIPYARD", HorizontalAlignment.Left, -1, 10, ReassemblyUi.CyanHighlight);
     }
 
-    private static string ModuleBrief(ShipShapeLibrary.ShapeSpec spec) => spec.Id switch
+    private static string ModuleBrief(ShipShapeLibrary.ShapeSpec spec)
     {
-        "core" => "舰船指挥核心 · 提供连接基准与生命支持",
-        "hull" => "标准装甲骨架 · 轻量化结构连接件",
-        "armor" => "复合防护层 · 提升耐久，适合外圈",
-        "thruster" or "thruster_medium" or "thruster_large" => "矢量推进单元 · 沿端口方向输出推力",
-        "gyro" => "姿态控制陀螺 · 维持转向与稳定",
-        "reactor" or "generator" or "capacitor" => "能源网络节点 · 支撑高功率系统",
-        "shield" => "偏转护盾 · 覆盖周边的能量防区",
-        "sensor" => "深空传感器 · 扩大航行态势感知",
-        "hyperdrive" => "迁跃引擎 · 接入核心后按 J 选择相邻星系",
-        "radiator" => "散热翼 · 将热量导出舰体",
-        "cargo" or "tractor" => "物流模块 · 运输与回收作业",
-        _ when spec.IsWeapon => "武器挂载点 · 沿朝向投射火力",
-        _ => "通用模块 · 接入舰体网络后生效",
-    };
+        if (!string.IsNullOrWhiteSpace(spec.NativeShapeName))
+        {
+            var detail = spec.Cannon is not null
+                ? $"炮 {spec.Cannon.Damage:0}伤害/{spec.Cannon.Range:0}m"
+                : spec.Shield is not null ? $"盾 {spec.Shield.Strength:0}强度/{spec.Shield.Regen:0}再生"
+                : spec.IsThruster ? $"推力 {spec.Thrust:0}"
+                : spec.IsCore ? "指挥与供能" : "结构模块";
+            return $"{spec.NativeShapeName} · {detail}";
+        }
+        if (spec.NativeShape > 0)
+            return $"原版 shape {spec.NativeShape} · {(spec.IsWeapon ? $"炮 {spec.Damage:0}伤害/{spec.Range:0}m" : "模块规格")}";
+        return spec.Id switch
+        {
+            "core" => "舰船指挥核心 · 提供连接基准与生命支持",
+            "hull" => "标准装甲骨架 · 轻量化结构连接件",
+            "armor" => "复合防护层 · 提升耐久，适合外圈",
+            "thruster" or "thruster_medium" or "thruster_large" => "矢量推进单元 · 沿端口方向输出推力",
+            "gyro" => "姿态控制陀螺 · 维持转向与稳定",
+            "reactor" or "generator" or "capacitor" => "能源网络节点 · 支撑高功率系统",
+            "shield" => "偏转护盾 · 覆盖周边的能量防区",
+            "sensor" => "深空传感器 · 扩大航行态势感知",
+            "hyperdrive" => "迁跃引擎 · 接入核心后按 J 选择相邻星系",
+            "radiator" => "散热翼 · 将热量导出舰体",
+            "cargo" or "tractor" => "物流模块 · 运输与回收作业",
+            _ when spec.IsWeapon => "武器挂载点 · 沿朝向投射火力",
+            _ => "通用模块 · 接入舰体网络后生效",
+        };
+    }
 
     private void DrawTechPanel(Rect2 rect, bool chamfer)
     {

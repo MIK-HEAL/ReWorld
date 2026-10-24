@@ -524,16 +524,15 @@ public sealed partial class ModularShip
         _blocks.Clear();
         InvalidateGeometry();
         _nextId = 1;
-        var core = AddBlock("core", Vector2.Zero, 0.0f);
-        var stern = AttachTo(core, 5, "hull", 0);
-        var upper = AttachTo(stern, 3, "hull", 1);
-        var lower = AttachTo(stern, 1, "hull", 3);
-        var bow = AttachTo(core, 2, "hull", 2);
+        var core = AddBlock("ra_47", Vector2.Zero, 0.0f);
+        var stern = AttachTo(core, 5, "ra_48", 0);
+        var upper = AttachTo(stern, 3, "ra_48", 1);
+        var lower = AttachTo(stern, 1, "ra_48", 3);
+        var bow = AttachTo(core, 2, "ra_48", 2);
         // 引擎仅用安装面 (+X) 连接；尾部两台同向，差动产生相反的转向力矩。
-        AttachTo(upper, 2, "thruster", 0);
-        AttachTo(lower, 2, "thruster", 0);
-        AttachTo(bow, 0, "cannon", 2);
-        AttachTo(bow, 3, "gyro", 1);
+        AttachTo(upper, 2, "ra_54", 0);
+        AttachTo(lower, 2, "ra_54", 0);
+        AttachTo(bow, 0, "ra_56", 2);
         AttachTo(bow, 1, "hyperdrive", 3);
         Changed?.Invoke();
     }

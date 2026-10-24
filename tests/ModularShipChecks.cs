@@ -143,7 +143,10 @@ public partial class ModularShipChecks : Node
                 Check(Mathf.Abs(mount.Offset.Rotated(heading).Cross(mount.Force.Rotated(heading)) - mount.Offset.Cross(mount.Force)) < 0.001f, "Yaw torque must be invariant under heading");
         foreach (var block in ship.Blocks.Where(b => !b.Spec.IsCore)) block.Enabled = false;
         var disabled = ShipPropulsion.Evaluate(ship, Vector2.Right, 1, activity);
-        Check(disabled.LocalForce.IsZeroApprox() && disabled.Torque == 0 && activity.Count == 0, "Disabled modules do not propel or turn");
+        var activeCore = ship.Blocks.Single(b => b.Spec.IsCore);
+        Check(disabled.ActiveCount == 1 && activity.Keys.Single() == activeCore.Id &&
+            disabled.LocalForce.Length() > 0 && disabled.Torque > 0,
+            "Disabled modules stop contributing while the native command block retains its thruster and torquer");
     }
 
     private void EditorInteraction()
@@ -174,13 +177,13 @@ public partial class ModularShipChecks : Node
         builder._Input(new InputEventMouseMotion { Position = new Vector2(50, 650) });
         Mouse(MouseButton.Left, false, new Vector2(50, 650));
         Check(builder.Ship.Blocks.Zip(initial.Blocks).All(pair => pair.First.Position.DistanceTo(pair.Second.Position) < 0.001f), "Invalid drag restores original blueprint");
-        builder.SelectShape("thruster");
+        builder.SelectShape("ra_60");
         Mouse(MouseButton.WheelUp, true, new Vector2(500, 360), true);
-        Check(builder.SelectedShapeId == "thruster_medium", "Alt wheel selects native medium engine");
+        Check(builder.SelectedShapeId == "ra_54", "Alt wheel selects the exported medium engine");
         Mouse(MouseButton.WheelUp, true, new Vector2(500, 360), true);
-        Check(builder.SelectedShapeId == "thruster_large", "Alt wheel selects native large engine");
+        Check(builder.SelectedShapeId == "ra_53", "Alt wheel selects the exported large engine");
         Mouse(MouseButton.WheelDown, true, new Vector2(500, 360), true);
-        Check(builder.SelectedShapeId == "thruster_medium", "Alt wheel down selects smaller engine");
+        Check(builder.SelectedShapeId == "ra_54", "Alt wheel down selects the smaller exported engine");
         Check(builder.Ship.Blocks.Count == initial.Blocks.Count, "Scaling a palette item must not mutate ship");
 
         // Exercise actual mouse placement and Alt-drag through the editor, rather

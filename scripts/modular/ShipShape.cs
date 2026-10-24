@@ -31,6 +31,11 @@ public enum BlockFeatures
     Vegetable = 1 << 11,     // 植物
     Transient = 1 << 12,     // 临时
     Hyperdrive = 1 << 14,    // ReWorld 跨星系迁跃能力（项目自定义）
+    Activate = 1 << 15,      // ACTIVATE：需要主动供能/触发
+    Fin = 1 << 16,           // FIN：空气动力翼/稳定面
+    Assembler = 1 << 17,     // ASSEMBLER：建造/复制设备
+    Explode = 1 << 18,       // EXPLODE：死亡时爆炸
+    Autofire = 1 << 19,      // AUTOFIRE：自动瞄准并开火
 }
 
 public static partial class ShipShapeLibrary
@@ -76,12 +81,100 @@ public static partial class ShipShapeLibrary
     /// </summary>
     public sealed class ShapeSpec
     {
+        public sealed class CannonSpec
+        {
+            public float RoundsPerSec { get; init; }
+            public int RoundsPerBurst { get; init; }
+            public float Burstyness { get; init; }
+            public float MuzzleVelocity { get; init; }
+            public float Spread { get; init; }
+            public float RangeStdDev { get; init; }
+            public float Power { get; init; }
+            public float Damage { get; init; }
+            public float Range { get; init; }
+            public float ExplodeRadius { get; init; }
+            public string Explosive { get; init; } = "";
+            public uint ColorUint { get; init; }
+            public float ProjectileSize { get; init; }
+            public float BarrelTaper { get; init; } = 1.0f;
+        }
+
+        public sealed class LaserSpec
+        {
+            public float PulsesPerSec { get; init; }
+            public int PulsesPerBurst { get; init; } = 1;
+            public float Burstyness { get; init; }
+            public float PulseAvailability { get; init; }
+            public float Decay { get; init; } = 0.35f;
+            public float Power { get; init; }
+            public float Width { get; init; }
+            public float Damage { get; init; }
+            public uint ColorUint { get; init; }
+            public float Range { get; init; }
+            public float ExplodeRadius { get; init; }
+            public float ImmobilizeForce { get; init; }
+            public float LinearForce { get; init; }
+            public float BarrelTaper { get; init; }
+        }
+
+        public sealed class ShieldSpec
+        {
+            public float Strength { get; init; }
+            public float Regen { get; init; }
+            public float Delay { get; init; }
+            public float Radius { get; init; }
+            public uint ColorUint { get; init; }
+            public uint LineColorUint { get; init; }
+            public uint DamagedColorUint { get; init; }
+        }
+
+        public sealed class ReplicateBlockSpec
+        {
+            public string ShapeName { get; init; } = "MISSILE";
+            public float Lifetime { get; init; }
+            public BlockFeatures Features { get; init; }
+            public float Capacity { get; init; }
+            public float Durability { get; init; }
+            public float Density { get; init; }
+            public float ThrustForce { get; init; }
+            public float TorquerTorque { get; init; }
+            public float ExplodeDamage { get; init; }
+            public float ExplodeRadius { get; init; }
+            public uint FillColorUint { get; init; }
+            public uint FillColor1Uint { get; init; }
+            public uint LineColorUint { get; init; }
+            public uint ThrusterColorUint { get; init; }
+            public uint ThrusterColor1Uint { get; init; }
+        }
+
+        public sealed class ShroudSpec
+        {
+            public Vector2 Size { get; init; }
+            public Vector3 Offset { get; init; }
+            public float Taper { get; init; }
+            public int TriColorId { get; init; }
+            public int TriColor1Id { get; init; }
+        }
+
         public required string Id { get; init; }              // 内部字符串 ID（兼容代码可读性）
         public required int NumId { get; init; }             // Reassembly BlockType ID（如 200）
         public required string Label { get; init; }
         public required string Category { get; init; }
         public required uint ColorUint { get; init; }        // 照搬逆向 uint 颜色（0xRRGGBB）
         public Color Color => UintToColor(ColorUint);
+        public uint FillColorUint { get; init; }
+        public uint FillColor1Uint { get; init; }
+        public uint LineColorUint { get; init; }
+        public uint ThrusterColorUint { get; init; }
+        public uint ThrusterColor1Uint { get; init; }
+        public Color FillColor => UintToColorRgba(FillColorUint == 0 ? ColorUint : FillColorUint);
+        public Color FillColor1 => UintToColorRgba(FillColor1Uint == 0 ? ColorUint : FillColor1Uint);
+        public Color LineColor => UintToColorRgba(LineColorUint == 0 ? ColorUint : LineColorUint);
+        public Color ThrusterColor => UintToColorRgba(ThrusterColorUint == 0 ? 0x90ececec : ThrusterColorUint);
+        public Color ThrusterColor1 => UintToColorRgba(ThrusterColor1Uint == 0 ? ThrusterColorUint : ThrusterColor1Uint);
+        public string NativeShapeName { get; init; } = "";
+        public string[] NativeFeatures { get; init; } = Array.Empty<string>();
+        public string NativeDefinitionJson { get; init; } = "";
         /// <summary>多边形顶点（本地坐标，照搬逆向 Vertices）。非空时优先使用。</summary>
         public Vector2[] VerticesField { get; init; } = Array.Empty<Vector2>();
         /// <summary>该形状上的端口列表（照搬逆向 Ports）。</summary>
@@ -117,6 +210,7 @@ public static partial class ShipShapeLibrary
         public int SourceFaction { get; init; }
         public int NativeShape { get; init; }
         public bool ReferenceGeometry { get; init; }
+        public bool IsRegistered { get; init; }
         public WeaponKind WeaponKind { get; init; } = WeaponKind.Cannon;
         public float Range { get; init; } = 1000;
         public float ProjectileSpeed { get; init; } = 900;
@@ -128,6 +222,31 @@ public static partial class ShipShapeLibrary
         public float ShieldStrength { get; init; } = 100;
         public float ShieldRadius { get; init; } = 80;
         public float ShieldRegen { get; init; } = 10;
+        public float Capacity { get; init; }
+        public float Points { get; init; }
+        public float Density { get; init; } = 0.15f;
+        public float Durability { get; init; }
+        public float GrowRate { get; init; }
+        public float TractorRange { get; init; }
+        public float ReplicateTime { get; init; }
+        public float LauncherPower { get; init; }
+        public float LauncherOutSpeed { get; init; }
+        public float TurretSpeed { get; init; }
+        public float TurretLimit { get; init; }
+        public float ThrusterBoost { get; init; }
+        public float ThrusterBoostTime { get; init; }
+        public float Sort { get; init; }
+        public float ActivatePower { get; init; }
+        public float FinForce { get; init; }
+        public float GeneratorCapacityPerSec { get; init; }
+        public CannonSpec? Cannon { get; init; }
+        public LaserSpec? Laser { get; init; }
+        public ShieldSpec? Shield { get; init; }
+        public ReplicateBlockSpec? ReplicateBlock { get; init; }
+        public IReadOnlyList<ShroudSpec> Shrouds { get; init; } = Array.Empty<ShroudSpec>();
+        public Vector2 BarrelOffset { get; init; }
+        public float BarrelTaper { get; init; } = 1.0f;
+        public bool HasGroundTruth { get; init; }
 
         /// <summary>施力方向（本地 +X）；排气方向相反。</summary>
         public Vector2 ThrustDirection { get; init; } = Vector2.Right;
@@ -162,6 +281,13 @@ public static partial class ShipShapeLibrary
         ((c >> 16) & 0xFF) / 255.0f,
         ((c >> 8) & 0xFF) / 255.0f,
         (c & 0xFF) / 255.0f);
+
+    public static Color UintToColorRgba(uint c)
+    {
+        var alpha = c > 0xFFFFFF ? ((c >> 24) & 0xFF) / 255.0f : 1.0f;
+        return new Color(((c >> 16) & 0xFF) / 255.0f, ((c >> 8) & 0xFF) / 255.0f,
+            (c & 0xFF) / 255.0f, alpha);
+    }
 
     /// <summary>
     /// 方块目录。原版已验证形状与 ReWorld 功能调参共用的运行时规格。
@@ -228,7 +354,7 @@ public static partial class ShipShapeLibrary
                 BlockFeatures.None, 6, mass: 3.0f, hull: 18.0f),
             // Project-specific travel equipment; this is not a decoded Reassembly block.
             ["hyperdrive"] = MakeRegular("hyperdrive", 30001, "迁跃引擎", "系统", 0x77D6DC,
-                BlockFeatures.Hyperdrive, 4, mass: 8.0f, hull: 35.0f),
+                BlockFeatures.Hyperdrive, 4, mass: 8.0f, hull: 35.0f, isRegistered: true),
             // 散热翼：六边形。
             ["radiator"] = MakeRegular("radiator", 416, "散热翼", "散热", 0x6EC6C7,
                 BlockFeatures.None, 6, mass: 3.0f, hull: 18.0f),
@@ -269,7 +395,8 @@ public static partial class ShipShapeLibrary
         BlockFeatures features, int sides,
         float mass = 5.0f, float hull = 20.0f,
         float thrust = 0.0f, float damage = 0.0f,
-        Vector2? thrustDir = null, Vector2? weaponDir = null, float torquerTorque = 0.0f, int nativeScale = 1)
+        Vector2? thrustDir = null, Vector2? weaponDir = null, float torquerTorque = 0.0f,
+        int nativeScale = 1, bool isRegistered = false)
     {
         // 共用 10 个原版单位的边长（显示比例为 2），不能为每个功能随意指定半径。
         // 正方形、三角形、六边形因此具有相同接缝长度。
@@ -286,6 +413,7 @@ public static partial class ShipShapeLibrary
         {
             Id = id,
             NumId = numId,
+            IsRegistered = isRegistered,
             Label = label,
             Category = category,
             ColorUint = colorUint,
@@ -317,7 +445,8 @@ public static partial class ShipShapeLibrary
 
     /// <summary>0x14023a390 的梯形公式，0x140238a89 起的三档常量。均减去顶点均值。</summary>
     private static ShapeSpec MakeThruster(string id, int numId, string label, int scale,
-        float baseLength, float legLength, float degrees, float thrust, float mass, float hull)
+        float baseLength, float legLength, float degrees, float thrust, float mass, float hull,
+        bool isRegistered = false)
     {
         var angle = Mathf.DegToRad(degrees);
         var x = -Mathf.Sin(angle) * legLength;
@@ -340,6 +469,7 @@ public static partial class ShipShapeLibrary
         return new ShapeSpec
         {
             Id = id, NumId = numId, Label = label, Category = "机动", ColorUint = 0x0C4E61,
+            IsRegistered = isRegistered,
             Features = BlockFeatures.Thruster, VerticesField = vertices, Ports = ports,
             Radius = vertices.Max(v => v.Length()), Scale = scale, Sides = 4,
             ExhaustPosition = (vertices[1] + vertices[2]) * 0.5f,
@@ -348,7 +478,7 @@ public static partial class ShipShapeLibrary
         };
     }
 
-    private static ShapeSpec MakeCommand()
+    private static ShapeSpec MakeCommand(bool isRegistered = false)
     {
         // shape 8, scale 1: h=5, bevel=10*(sqrt(2)-1)/2.
         var h = 5.0f * DisplayScale;
@@ -371,6 +501,7 @@ public static partial class ShipShapeLibrary
         return new ShapeSpec
         {
             Id = "core", NumId = 200, Label = "舰船核心", Category = "核心", ColorUint = 0x069A95,
+            IsRegistered = isRegistered,
             Features = BlockFeatures.Command, VerticesField = vertices, Ports = ports,
             Radius = vertices.Max(v => v.Length()), Sides = vertices.Length, Mass = 12, Hull = 60,
         };
@@ -379,16 +510,11 @@ public static partial class ShipShapeLibrary
     /// <summary>获取形状，未知形状回退到装甲骨架。</summary>
     public static ShapeSpec Get(string id) => Shapes.TryGetValue(id, out var spec) ? spec : Shapes["hull"];
 
-    /// <summary>建造面板的方块顺序（调色板按此顺序展示，鼠标点击选择）。</summary>
-    private static readonly string[] StarterOrder =
-    {
-        "core", "hull", "armor", "thruster", "thruster_medium", "thruster_large", "gyro",
-        "laser", "cannon", "beam", "railgun", "missile",
-        "shield", "point_defense", "reactor", "generator", "capacitor",
-        "sensor", "hyperdrive", "radiator", "cargo", "tractor",
-    };
-
     public static readonly IReadOnlyDictionary<string, ShapeSpec> Shapes = LoadCatalog(StarterShapes);
-    public static readonly string[] BuildOrder = StarterOrder.Concat(Shapes.Keys.Except(StarterOrder)
-        .OrderBy(id => Shapes[id].SourceFaction).ThenBy(id => Shapes[id].NumId)).ToArray();
+    public static readonly string[] BuildOrder = Shapes.Values
+        .Where(spec => spec.HasGroundTruth || spec.NumId == 30001)
+        .OrderBy(spec => spec.NumId == 30001 ? int.MaxValue : spec.Sort)
+        .ThenBy(spec => spec.NumId)
+        .Select(spec => spec.Id)
+        .ToArray();
 }

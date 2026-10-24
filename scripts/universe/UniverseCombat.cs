@@ -56,7 +56,7 @@ public partial class UniverseView
             {
                 var id = $"{cell.X},{cell.Y}/ore/{i}";
                 if (Progress.MinedDeposits.Contains(id)) continue;
-                var ship = new ModularShip(); ship.AddBlock("hull", Vector2.Zero, i * 0.7f);
+                var ship = new ModularShip(); ship.AddBlock("ra_219", Vector2.Zero, i * 0.7f);
                 var pos = _playerPosition + new Vector2(550 + i % 6 * 110, (i / 6 - 1) * 140);
                 if (_visibleBodies.Any(b => b.HasSurface && b.SurfaceDistance(pos) < 90)) continue;
                 field.Add(new CombatVessel { Name = "矿质残骸 · 90 R", Ship = ship, Mineral = true, DepositId = id,
@@ -81,7 +81,7 @@ public partial class UniverseView
         {
             _playerPosition = PlayerCombat.Position;
             var collected = Combat.Collect(_playerPosition, PlayerCombat.HasTractor ? 450 : 100);
-            if (collected > 0) { Progress.Collect(collected); Notify($"回收 {collected} R · M 造舰 / U 解锁科技"); }
+            if (collected > 0) { Progress.Collect(collected); Notify($"回收 {collected} R · M 造舰 / U 查看升级"); }
         }
         if (!_ship.HasLiveCore && !_deathAnnounced)
         { _deathAnnounced = true; Notify("指挥核心已毁 · Enter 返回空间站并启用应急舰"); }

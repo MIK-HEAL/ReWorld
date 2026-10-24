@@ -76,10 +76,11 @@ public sealed class ShipDesign
     /// <summary>数字 ID → 字符串 ID（对齐 TheShapes 表）。</summary>
     private static string? ShapeIdFromNum(int numId)
     {
-        foreach (var (key, spec) in ShipShapeLibrary.Shapes)
-            if (spec.NumId == numId)
-                return key;
-        return null;
+        return ShipShapeLibrary.Shapes.Values
+            .Where(spec => spec.NumId == numId)
+            .OrderByDescending(spec => spec.IsRegistered)
+            .Select(spec => spec.Id)
+            .FirstOrDefault();
     }
 
     /// <summary>解析舰船 .lua 文件（照搬逆向 ShipDesign.ParseLua）。</summary>

@@ -87,7 +87,7 @@ public partial class UniverseTravelChecks : Node
             foreach (var vessel in view.Traffic.Vessels)
                 Check(vessel.Ship.GetConnectedComponents().Count == 1 && vessel.Ship.Blocks.All(b => vessel.Ship.CanPlace(b.ShapeId, b.Position, b.Angle, b)),
                     "Friendly ship modules are connected and do not overlap");
-            Check(view.Traffic.Vessels.Where(v => v.Name == "联航运输舰").All(v => v.Ship.Blocks.Any(b => b.ShapeId == "cargo") && !v.Ship.Blocks.Any(b => b.Spec.IsWeapon)),
+            Check(view.Traffic.Vessels.Where(v => v.Name == "联航运输舰").All(v => v.Ship.Blocks.Any(b => b.Spec.NumId == 201) && !v.Ship.Blocks.Any(b => b.Spec.IsWeapon)),
                 "Transports carry actual cargo modules instead of cannons");
             for (var i = 0; i < 120; i++) view.Traffic.Step(1f / 60, view.PlayerPosition, 0,
                 UniverseGenerator.GenerateSystem(Vector2I.Zero).Bodies);

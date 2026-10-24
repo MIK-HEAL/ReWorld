@@ -21,6 +21,7 @@ public partial class ShipFlightChecks : Node
             Integration();
             Actuators();
             Tracking();
+            RapidCursorTurn();
             ViewIntegration();
             CacheAndPerformance();
             GD.Print($"SHIP_FLIGHT_CHECKS_PASS: {_checks} assertions");
@@ -192,6 +193,36 @@ public partial class ShipFlightChecks : Node
             Check(Mathf.Abs(Mathf.Wrap(heading - Mathf.Pi / 2, -Mathf.Pi, Mathf.Pi)) < 0.04f && Mathf.Abs(spin) < 0.03f,
                 $"Cursor tracking settles on target with counter-thrust at dt={step}");
         }
+    }
+
+    private void RapidCursorTurn()
+    {
+        // A quick cursor flick must not leave the ship spinning after the
+        // pointer stops. This reproduces the high-error input that exposed
+        // the under-damped controller on the exported reference hull.
+        var ship = Reference();
+        var pilot = new ShipFlightController();
+        var activity = new Dictionary<int, float>();
+        var position = Vector2.Zero;
+        var velocity = Vector2.Zero;
+        float heading = 0, spin = 0;
+        const float step = 1.0f / 120;
+        for (var time = 0.0f; time < 0.18f; time += step)
+        {
+            var command = pilot.Resolve(default, heading, Vector2.Left);
+            var output = pilot.Evaluate(ship, command, velocity.Rotated(-heading), spin, activity);
+            ShipFlightController.Integrate(ref position, ref velocity, ref heading, ref spin,
+                output.LocalForce.Rotated(heading) / ship.TotalMass, output.Torque / ship.MomentOfInertia(), step);
+        }
+        for (var time = 0.0f; time < 4.0f; time += step)
+        {
+            var command = pilot.Resolve(default, heading, Vector2.Left);
+            var output = pilot.Evaluate(ship, command, velocity.Rotated(-heading), spin, activity);
+            ShipFlightController.Integrate(ref position, ref velocity, ref heading, ref spin,
+                output.LocalForce.Rotated(heading) / ship.TotalMass, output.Torque / ship.MomentOfInertia(), step);
+        }
+        Check(Mathf.Abs(Mathf.Wrap(heading - Mathf.Pi, -Mathf.Pi, Mathf.Pi)) < 0.04f && Mathf.Abs(spin) < 0.05f,
+            "A fast cursor turn reaches the target and stops instead of spinning continuously");
     }
 
     private void ViewIntegration()

@@ -38,9 +38,11 @@ public partial class MainNavigationChecks : Node
             AddChild(main);
             var builder = main.GetNode<ShipBuilder>("ShipBuilder");
             var universe = main.GetNode<UniverseView>("Universe");
-            Check(main.GetChildCount() == 2, "Shell creates only the universe and modular builder");
+            var upgrades = main.GetNode<UpgradeScreen>("Upgrades");
+            Check(main.GetChildCount() == 3, "Shell creates the universe, builder and separate upgrade screen");
             CheckPage(universe, true);
             CheckPage(builder, false);
+            CheckPage(upgrades, false);
             var shipField = typeof(UniverseView).GetField("_ship", BindingFlags.Instance | BindingFlags.NonPublic)!;
             Check(ReferenceEquals(shipField.GetValue(universe), builder.Ship), "Flight and editor share the same ship");
             await Press(Key.R);
@@ -49,6 +51,12 @@ public partial class MainNavigationChecks : Node
             Check(universe.TableOpen, "Tab opens fleet table without opening builder");
             await Press(Key.Tab);
             Check(!universe.TableOpen, "Tab returns from command table");
+            await Press(Key.U);
+            CheckPage(upgrades, true);
+            CheckPage(universe, false);
+            CheckPage(builder, false);
+            await Press(Key.Escape);
+            CheckPage(universe, true);
 
             foreach (var key in new[] { Key.Tab, Key.B, Key.Space, Key.Escape })
             {
@@ -60,6 +68,11 @@ public partial class MainNavigationChecks : Node
             await Press(Key.M);
             CheckPage(universe, false);
             CheckPage(builder, true);
+            await Press(Key.U);
+            CheckPage(upgrades, true);
+            await Press(Key.Escape);
+            CheckPage(builder, true);
+            CheckPage(universe, false);
             await Press(Key.R);
             Check(universe.ControlScheme == ShipFlightController.ControlScheme.Cardinal,
                 "Builder rotation cannot change the hidden universe flight mode");
@@ -86,7 +99,7 @@ public partial class MainNavigationChecks : Node
             await Press(Key.M);
             CheckPage(universe, true);
             CheckPage(builder, false);
-            Check(main.GetChildCount() == 2, "Removed shortcuts never create factory, route or test pages");
+            Check(main.GetChildCount() == 3, "Navigation keeps one independent upgrade screen without duplicate pages");
             await Press(Key.J);
             Check(universe.ChartOpen, "J opens the star chart in flight");
             await Press(Key.M);

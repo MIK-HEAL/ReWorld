@@ -21,12 +21,15 @@ public static class ModularShipVisual
         public required Vector2[] LocalVertices;
         public required Vector2[] Vertices;
         public required Vector2[] Outline;
-        public required Vector2[] Shadow;
-        public required Vector2[] Inset;
-        public required Vector2[] InsetOutline;
-        public readonly Vector2[] Diamond = new Vector2[5];
+        public required ShroudGeometry[] Shrouds;
         public readonly Vector2[] Flame = new Vector2[3];
         public readonly Vector2[] FlameCore = new Vector2[3];
+    }
+
+    private sealed class ShroudGeometry
+    {
+        public readonly Vector2[] Vertices = new Vector2[4];
+        public readonly Vector2[] Outline = new Vector2[5];
     }
 
     private sealed class GeometryCache
@@ -35,14 +38,12 @@ public static class ModularShipVisual
         public bool Initialized;
         public Vector2 Center;
         public HashSet<ModularShip.Block> MainComponent = new();
-        public List<(ModularShip.Block A, ModularShip.Block B)> Connections = new();
         public BlockGeometry[] Blocks = Array.Empty<BlockGeometry>();
 
         public void Refresh(ModularShip ship)
         {
             Center = ship.CenterOfMass();
             MainComponent = new HashSet<ModularShip.Block>(ship.GetMainComponent());
-            Connections = ship.GetConnections();
             Blocks = new BlockGeometry[ship.Blocks.Count];
             for (var i = 0; i < Blocks.Length; i++)
             {
@@ -54,8 +55,7 @@ public static class ModularShipVisual
                 {
                     Block = block, Center = block.Position - Center, LocalVertices = local,
                     Vertices = new Vector2[source.Length], Outline = new Vector2[source.Length + 1],
-                    Shadow = new Vector2[source.Length], Inset = new Vector2[source.Length],
-                    InsetOutline = new Vector2[source.Length + 1],
+                    Shrouds = Enumerable.Range(0, block.Spec.Shrouds.Count).Select(_ => new ShroudGeometry()).ToArray(),
                 };
             }
             Revision = ship.Revision;
@@ -64,6 +64,32 @@ public static class ModularShipVisual
     }
 
     private static readonly ConditionalWeakTable<ModularShip, GeometryCache> Geometry = new();
+
+    public static Color ResolveFillColor(ShipShapeLibrary.ShapeSpec spec, int variation = 0)
+    {
+        var elapsed = Time.GetTicksMsec() * 0.001f;
+        var timeA = spec.NumId * 0.037f + variation * 0.11f;
+        var blend = 0.5f + 0.5f * Mathf.Sin(0.5f * (elapsed + timeA));
+        return spec.FillColor.Lerp(spec.FillColor1, blend);
+    }
+
+    public static void DrawIcon(CanvasItem canvas, ShipShapeLibrary.ShapeSpec spec, Vector2 center,
+        float targetRadius, bool encrypted = false)
+    {
+        var scale = targetRadius / Mathf.Max(1, spec.Radius);
+        var vertices = spec.Vertices().Select(v => center + v * scale).ToArray();
+        var fill = ResolveFillColor(spec);
+        var line = spec.LineColor;
+        if (encrypted)
+        {
+            fill = fill.Lerp(new Color("#19242c"), 0.62f);
+            line.A *= 0.68f;
+        }
+        canvas.DrawColoredPolygon(vertices, fill);
+        canvas.DrawPolyline(vertices.Append(vertices[0]).ToArray(), line, 1.0f);
+        if (!encrypted && spec.Shrouds.Count > 0) DrawShrouds(canvas, spec, center, 0, scale);
+    }
+
     /// <summary>绘制整艘舰体到当前 CanvasItem 画布（须已设置好世界变换）。</summary>
     /// <param name="canvas">目标 CanvasItem（用于 Draw* 调用）。</param>
     /// <param name="ship">要绘制的舰体。</param>
@@ -88,16 +114,8 @@ public static class ModularShipVisual
         var com = geometry.Center;
         var mainComponent = geometry.MainComponent;
 
-        // 1. 连接线（端口重合的方块之间）。
-        foreach (var (a, b) in geometry.Connections)
-        {
-            var aWorld = worldPos + (a.Position - com).Rotated(heading);
-            var bWorld = worldPos + (b.Position - com).Rotated(heading);
-            canvas.DrawLine(aWorld, bWorld, new Color("#122c38", 0.9f), 7.0f);
-            canvas.DrawLine(aWorld, bWorld, new Color("#3c8c99", 0.55f), 1.2f);
-        }
-
-        // 2. 方块多边形。
+        // Reassembly renders the block silhouette with its two animated fill colors
+        // and one faction line color. It does not inset or panelize the polygon.
         foreach (var item in geometry.Blocks)
         {
             var block = item.Block;
@@ -109,56 +127,22 @@ public static class ModularShipVisual
                 item.Outline[i] = vertices[i] = center + item.LocalVertices[i].Rotated(heading);
             item.Outline[^1] = vertices[0];
 
-            var color = spec.Color.Lerp(new Color("#172431"), 0.32f);
+            var color = ResolveFillColor(spec, block.Id);
             color = color.Lerp(new Color("#5e292b"), 0.65f * (1 - Mathf.Clamp(block.Health / spec.Hull, 0, 1)));
             if (!block.Enabled || !mainComponent.Contains(block))
                 color = color.Darkened(0.55f);
 
-            var shadow = item.Shadow;
-            for (var i = 0; i < vertices.Length; i++) shadow[i] = vertices[i] + new Vector2(2, 3);
-            canvas.DrawColoredPolygon(shadow, new Color("#010306", 0.75f));
             canvas.DrawColoredPolygon(vertices, color);
-            var inset = item.Inset;
-            for (var i = 0; i < vertices.Length; i++) inset[i] = center + (vertices[i] - center) * 0.78f;
-            canvas.DrawColoredPolygon(inset, color.Lightened(0.12f));
-            canvas.DrawPolyline(item.Outline, new Color("#9bbac1", 0.68f), 1.2f);
-            var insetOutline = item.InsetOutline;
-            inset.CopyTo(insetOutline, 0);
-            insetOutline[^1] = inset[0];
-            canvas.DrawPolyline(insetOutline, new Color("#0b1218", 0.92f), 1.0f);
+            var lineColor = spec.LineColor;
+            canvas.DrawPolyline(item.Outline, lineColor, 1.0f);
 
-            var axis = Vector2.Right.Rotated(angle);
-            var cross = axis.Rotated(Mathf.Pi * 0.5f);
-            if (!spec.IsCore && !spec.IsThruster && !spec.IsWeapon)
-            {
-                canvas.DrawLine(center - axis * spec.Radius * 0.24f, center + axis * spec.Radius * 0.24f, new Color("#b0cbd0", 0.35f), 1.0f);
-                canvas.DrawCircle(center + cross * spec.Radius * 0.22f, 1.4f, new Color("#b0cbd0", 0.7f));
-            }
-
-            // 核心高亮。
-            if (spec.IsCore)
-            {
-                var radius = spec.Radius * 0.4f;
-                var diamond = item.Diamond;
-                diamond[0] = center + new Vector2(0, -radius).Rotated(heading);
-                diamond[1] = center + new Vector2(radius, 0).Rotated(heading);
-                diamond[2] = center + new Vector2(0, radius).Rotated(heading);
-                diamond[3] = center + new Vector2(-radius, 0).Rotated(heading);
-                diamond[4] = diamond[0];
-                canvas.DrawPolyline(diamond, new Color("#eab66b"), 1.6f);
-                canvas.DrawCircle(center, radius * 0.36f, new Color("#8ce8df", 0.12f));
-            }
-            else if (spec.IsThruster)
+            if (spec.IsThruster)
             {
                 var activity = thrusterActivity is not null && thrusterActivity.TryGetValue(block.Id, out var a) ? a : 0.0f;
                 DrawEngine(canvas, spec, center, angle, activity, item.Flame, item.FlameCore);
             }
-            else if (spec.IsWeapon)
-            {
-                // 武器：炮口方向。
-                var fireDir = spec.WeaponDirection.Rotated(angle);
-                canvas.DrawLine(center, center + fireDir * spec.Radius, new Color("#eab66b", 0.82f), 2.0f);
-            }
+            else if (spec.IsWeapon || spec.Shrouds.Count > 0)
+                DrawShrouds(canvas, spec, center, angle, 1, item.Shrouds);
 
             // 失连方块标记。
             if (!mainComponent.Contains(block))
@@ -190,30 +174,64 @@ public static class ModularShipVisual
         Vector2 center, float angle, float activity = 0)
         => DrawEngine(canvas, spec, center, angle, activity, null, null);
 
+    public static void DrawWeapon(CanvasItem canvas, ShipShapeLibrary.ShapeSpec spec, Vector2 center,
+        float angle, float width = 2.0f)
+    {
+        DrawShrouds(canvas, spec, center, angle);
+    }
+
     private static void DrawEngine(CanvasItem canvas, ShipShapeLibrary.ShapeSpec spec,
         Vector2 center, float angle, float activity, Vector2[]? flame, Vector2[]? flameCore)
     {
         Vector2 At(Vector2 point) => center + point.Rotated(angle);
+        if (activity <= 0.01f) return;
         var nozzle = spec.ExhaustPosition;
-        var width = spec.ExhaustHalfWidth * 0.82f;
+        var width = spec.ExhaustHalfWidth;
         var mouthTop = nozzle + Vector2.Up * width;
         var mouthBottom = nozzle + Vector2.Down * width;
-        canvas.DrawLine(At(mouthTop), At(mouthBottom), new Color("#95aeac"), 2.2f, true);
-        // 内部收缩的喷管使短梯形引擎在缩小时也能读出前后方向。
-        var throat = new Vector2(-nozzle.X * 0.45f, 0);
-        canvas.DrawLine(At(mouthTop), At(throat + Vector2.Up * width * 0.35f), new Color("#75ceac", 0.65f), 1.2f, true);
-        canvas.DrawLine(At(mouthBottom), At(throat + Vector2.Down * width * 0.35f), new Color("#75ceac", 0.65f), 1.2f, true);
-        if (activity <= 0.01f) return;
         var length = spec.Radius * (0.55f + 1.5f * activity);
         flame ??= new Vector2[3];
         flameCore ??= new Vector2[3];
         flame[0] = At(mouthTop);
         flame[1] = At(nozzle + Vector2.Left * length);
         flame[2] = At(mouthBottom);
-        canvas.DrawColoredPolygon(flame, new Color("#75ceac", 0.3f + activity * 0.35f));
-        flameCore[0] = At(nozzle + Vector2.Up * width * 0.4f);
-        flameCore[1] = At(nozzle + Vector2.Left * length * 0.65f);
-        flameCore[2] = At(nozzle + Vector2.Down * width * 0.4f);
-        canvas.DrawColoredPolygon(flameCore, new Color("#d7fff0", 0.8f));
+        var flameColor = spec.ThrusterColor.Lerp(spec.ThrusterColor1, Mathf.Clamp(activity, 0, 1));
+        flameColor.A *= Mathf.Clamp(activity, 0, 1);
+        canvas.DrawColoredPolygon(flame, flameColor);
+    }
+
+    private static void DrawShrouds(CanvasItem canvas, ShipShapeLibrary.ShapeSpec spec, Vector2 center, float angle,
+        float geometryScale = 1, ShroudGeometry[]? buffers = null)
+    {
+        if (spec.Shrouds.Count == 0) return;
+        var direction = spec.WeaponDirection.Rotated(angle);
+        var side = direction.Rotated(Mathf.Pi * 0.5f);
+        var originOffset = spec.BarrelOffset * ShipShapeLibrary.DisplayScale * geometryScale;
+        for (var i = 0; i < spec.Shrouds.Count; i++)
+        {
+            var shroud = spec.Shrouds[i];
+            var origin = center + (originOffset + new Vector2(shroud.Offset.X, shroud.Offset.Y) * ShipShapeLibrary.DisplayScale * geometryScale).Rotated(angle);
+            var length = Mathf.Max(2, shroud.Size.X * ShipShapeLibrary.DisplayScale * geometryScale);
+            var half = Mathf.Max(1, shroud.Size.Y * ShipShapeLibrary.DisplayScale * geometryScale * 0.5f);
+            var taper = Mathf.Clamp(shroud.Taper, -0.7f, 0.7f);
+            var near = half * (1.0f - taper);
+            var far = half * (1.0f + taper);
+            var polygon = buffers is not null && i < buffers.Length ? buffers[i].Vertices : new Vector2[4];
+            polygon[0] = origin - side * near;
+            polygon[1] = origin + side * near;
+            polygon[2] = origin + direction * length + side * far;
+            polygon[3] = origin + direction * length - side * far;
+            var phase = shroud.TriColorId == 1 ? 1.0f : 0.0f;
+            var otherPhase = shroud.TriColor1Id == 1 ? 1.0f : 0.0f;
+            var blend = 0.5f + 0.5f * Mathf.Sin(0.5f * (Time.GetTicksMsec() * 0.001f + spec.NumId * 0.037f));
+            var fill = spec.FillColor.Lerp(spec.FillColor1, Mathf.Lerp(phase, otherPhase, blend));
+            canvas.DrawColoredPolygon(polygon, fill);
+            var lineColor = spec.LineColor;
+            lineColor.A = Mathf.Max(lineColor.A, 0.35f);
+            var outline = buffers is not null && i < buffers.Length ? buffers[i].Outline : new Vector2[5];
+            Array.Copy(polygon, outline, polygon.Length);
+            outline[^1] = polygon[0];
+            canvas.DrawPolyline(outline, lineColor, 1.0f);
+        }
     }
 }

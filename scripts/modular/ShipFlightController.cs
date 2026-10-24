@@ -20,6 +20,11 @@ public sealed class ShipFlightController
     public const float MaxSpeed = 5000;
     public const float RotationKp = 1.2f;
     public const float RotationKd = 0.3f;
+    // Reassembly's rotator damping multiplier.  The previous controller used
+    // only Kd, which leaves the high-power exported thrusters under-damped and
+    // lets a fast cursor flick carry the ship past the target indefinitely.
+    public const float RotatorDampingMultiplier = 6.0f;
+    public const float MaxAngularSpeed = 4.0f;
     public ControlScheme Scheme { get; private set; } = ControlScheme.Cursor;
     private float _targetHeading;
     private bool _headingInitialized;
@@ -115,9 +120,15 @@ public sealed class ShipFlightController
         float wantedTorque = 0;
         if (angularAcceleration > 0.0001f)
         {
-            // 有限推力下的角度反馈与反向制动；不直接改写朝向或角速度。
-            var yaw = RotationKp * command.HeadingError
-                - 2 * RotationKd / Mathf.Sqrt(angularAcceleration) * angularVelocity;
+            // 先把角度误差转换成有限的目标角速度，再用临界阻尼的
+            // 速度闭环追踪它。这样快速甩动鼠标不会把角速度推到无限，
+            // 目标反向时也会立即使用反向力矩刹车。
+            var naturalFrequency = Mathf.Sqrt(angularAcceleration * RotationKp);
+            var targetAngularVelocity = Mathf.Clamp(command.HeadingError * naturalFrequency,
+                -MaxAngularSpeed, MaxAngularSpeed);
+            var dampingRatio = Mathf.Max(1.0f, RotationKd * RotatorDampingMultiplier);
+            var yaw = (targetAngularVelocity - angularVelocity)
+                * (2.0f * dampingRatio * naturalFrequency) / angularAcceleration;
             if (Scheme == ControlScheme.Keyboard && command.ManualTurn != 0)
                 yaw = command.ManualTurn;
             wantedTorque = Mathf.Clamp(yaw, -1, 1) * (yaw >= 0 ? positive : negative);
