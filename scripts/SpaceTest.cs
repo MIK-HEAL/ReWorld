@@ -5,6 +5,11 @@ using System.Linq;
 
 public partial class SpaceTest : Node2D
 {
+    private const float WorldWidth = 2800.0f;
+    private const float WorldHeight = 1900.0f;
+    private const float ViewWidth = 1280.0f;
+    private const float ViewHeight = 720.0f;
+
     private enum CombatPhase
     {
         Active,
@@ -17,16 +22,30 @@ public partial class SpaceTest : Node2D
         public Vector2 Position;
         public Vector2 Velocity;
         public double Life;
+        public double Damage;
         public bool FromPlayer;
     }
 
     private sealed class Target
     {
         public Vector2 Position;
+        public Vector2 Velocity;
+        public float Heading;
         public double Health;
         public double MaxHealth;
         public required string Name;
         public double FireTimer;
+        public List<EnemyModule> Modules { get; } = new();
+    }
+
+    private sealed class EnemyModule
+    {
+        public required string Kind;
+        public Vector2 LocalOffset;
+        public Vector2 Size;
+        public double Health;
+        public double MaxHealth;
+        public bool Enabled = true;
     }
 
     private sealed class ThrusterVector
@@ -35,10 +54,20 @@ public partial class SpaceTest : Node2D
         public Vector2 LocalForce;
         public float Power;
         public float Torque;
+        public float Activation;
+    }
+
+    private sealed class WeaponMount
+    {
+        public Vector2 LocalOffset;
+        public Vector2 LocalDirection;
+        public float Damage;
     }
 
     private WorldState _world = null!;
-    private Vector2 _playerPosition = new(560.0f, 370.0f);
+    private Vector2 _playerPosition = new(1360.0f, 960.0f);
+    private Vector2 _cameraPosition = new(1360.0f, 960.0f);
+    private float _cameraZoom = 0.94f;
     private Vector2 _playerVelocity = Vector2.Zero;
     private readonly List<Projectile> _projectiles = new();
     private readonly List<Target> _targets = new();
@@ -63,7 +92,11 @@ public partial class SpaceTest : Node2D
     private float _reverseThrust;
     private float _leftTurnThrust;
     private float _rightTurnThrust;
+    private float _turnCapacity;
     private int _activeThrusters;
+    private List<ThrusterVector> _thrusterProfile = new();
+    private List<WeaponMount> _weaponProfile = new();
+    private readonly HashSet<int> _disabledShipModules = new();
     private bool _requestedExit;
     private int _expeditionStage = 1;
 
@@ -81,6 +114,33 @@ public partial class SpaceTest : Node2D
     public double BattleHeatCapacity => _battleHeatCapacity;
     public float ForwardThrust => _forwardThrust;
     public float ReverseThrust => _reverseThrust;
+    public float Heading => _playerHeading;
+    public float AngularVelocity => _playerAngularVelocity;
+    public float TurnCapacity => _turnCapacity;
+    public float LeftTurnThrust => _leftTurnThrust;
+    public float RightTurnThrust => _rightTurnThrust;
+    public int ActiveThrusters => _activeThrusters;
+    public float Speed => _playerVelocity.Length();
+    public Vector2 WorldPosition => _playerPosition;
+    public float CameraZoom => _cameraZoom;
+
+    public void RequestNextWave()
+    {
+        if (_phase == CombatPhase.Victory)
+            StartNextWave();
+    }
+
+    public void RequestRestart()
+    {
+        if (_phase != CombatPhase.Active)
+            RestartCurrentWave();
+    }
+
+    public void RequestExit()
+    {
+        if (_phase != CombatPhase.Active)
+            _requestedExit = true;
+    }
 
     public bool ConsumeExitRequest()
     {
@@ -100,7 +160,7 @@ public partial class SpaceTest : Node2D
 
     public void Enter()
     {
-        _expeditionStage = 1;
+        _expeditionStage = _world.SelectedExpeditionStage;
         ConfigureTargetWave(_expeditionStage);
         ResetCombatState();
     }
@@ -109,7 +169,9 @@ public partial class SpaceTest : Node2D
     {
         _active = true;
         Visible = true;
-        _playerPosition = new Vector2(560.0f, 370.0f);
+        _playerPosition = new Vector2(1360.0f, 960.0f);
+        _cameraPosition = _playerPosition;
+        _cameraZoom = 0.94f;
         _playerVelocity = Vector2.Zero;
         _playerHeading = 0.0f;
         _playerAngularVelocity = 0.0f;
@@ -125,7 +187,11 @@ public partial class SpaceTest : Node2D
         _reverseThrust = 0.0f;
         _leftTurnThrust = 0.0f;
         _rightTurnThrust = 0.0f;
+        _turnCapacity = 0.0f;
         _activeThrusters = 0;
+        _thrusterProfile.Clear();
+        _disabledShipModules.Clear();
+        _weaponProfile = BuildWeaponProfile();
         var metrics = _world.GetMetrics();
         _playerMaxShield = metrics.Shield;
         _playerShield = _playerMaxShield;
@@ -136,7 +202,15 @@ public partial class SpaceTest : Node2D
         _weaponCooldown = 0.0;
         foreach (var target in _targets)
         {
-            target.Health = target.MaxHealth;
+            target.Health = 0.0;
+            foreach (var module in target.Modules)
+            {
+                module.Health = module.MaxHealth;
+                module.Enabled = true;
+                target.Health += module.Health;
+            }
+            target.Velocity = Vector2.Zero;
+            target.Heading = Mathf.Pi;
             target.FireTimer = 0.8;
         }
         QueueRedraw();
@@ -149,20 +223,75 @@ public partial class SpaceTest : Node2D
         {
             _targets.AddRange(new[]
             {
-                new Target { Position = new Vector2(900.0f, 220.0f), Health = 20.0, MaxHealth = 20.0, Name = "失控无人机 A" },
-                new Target { Position = new Vector2(1000.0f, 500.0f), Health = 20.0, MaxHealth = 20.0, Name = "失控无人机 B" },
-                new Target { Position = new Vector2(780.0f, 520.0f), Health = 20.0, MaxHealth = 20.0, Name = "失控无人机 C" },
+                CreateTarget(new Vector2(1960.0f, 480.0f), "失控无人机 A", 0),
+                CreateTarget(new Vector2(2250.0f, 1390.0f), "失控无人机 B", 0),
+                CreateTarget(new Vector2(930.0f, 1470.0f), "失控无人机 C", 0),
             });
             return;
         }
 
         _targets.AddRange(new[]
         {
-            new Target { Position = new Vector2(850.0f, 180.0f), Health = 28.0, MaxHealth = 28.0, Name = "风暴哨卫 A" },
-            new Target { Position = new Vector2(1040.0f, 250.0f), Health = 28.0, MaxHealth = 28.0, Name = "风暴哨卫 B" },
-            new Target { Position = new Vector2(1080.0f, 500.0f), Health = 32.0, MaxHealth = 32.0, Name = "风暴哨卫 C" },
-            new Target { Position = new Vector2(760.0f, 520.0f), Health = 26.0, MaxHealth = 26.0, Name = "风暴哨卫 D" },
+            CreateTarget(new Vector2(2040.0f, 390.0f), "风暴哨卫 A", 1),
+            CreateTarget(new Vector2(2440.0f, 760.0f), "风暴哨卫 B", 1),
+            CreateTarget(new Vector2(2180.0f, 1460.0f), "风暴哨卫 C", 1),
+            CreateTarget(new Vector2(610.0f, 1370.0f), "风暴哨卫 D", 1),
         });
+        if (stage == 2)
+            return;
+
+        _targets.Clear();
+        _targets.AddRange(new[]
+        {
+            CreateTarget(new Vector2(2230.0f, 260.0f), "监管核心 A", 2),
+            CreateTarget(new Vector2(2540.0f, 720.0f), "档案护卫 B", 2),
+            CreateTarget(new Vector2(2300.0f, 1550.0f), "档案护卫 C", 2),
+            CreateTarget(new Vector2(600.0f, 1540.0f), "监管核心 D", 2),
+            CreateTarget(new Vector2(470.0f, 570.0f), "拦截节点 E", 1),
+        });
+    }
+
+    private Target CreateTarget(Vector2 position, string name, int tier)
+    {
+        var target = new Target
+        {
+            Position = position,
+            Heading = Mathf.Pi,
+            Name = name,
+            FireTimer = 0.8,
+        };
+
+        var modules = tier switch
+        {
+            0 => new[]
+            {
+                new EnemyModule { Kind = "core", LocalOffset = Vector2.Zero, Size = new Vector2(26, 26), MaxHealth = 10, Health = 10 },
+                new EnemyModule { Kind = "thruster", LocalOffset = new Vector2(-30, 0), Size = new Vector2(20, 18), MaxHealth = 5, Health = 5 },
+                new EnemyModule { Kind = "weapon", LocalOffset = new Vector2(28, 0), Size = new Vector2(22, 16), MaxHealth = 5, Health = 5 },
+            },
+            1 => new[]
+            {
+                new EnemyModule { Kind = "core", LocalOffset = Vector2.Zero, Size = new Vector2(30, 30), MaxHealth = 12, Health = 12 },
+                new EnemyModule { Kind = "armor", LocalOffset = new Vector2(-28, 0), Size = new Vector2(24, 26), MaxHealth = 7, Health = 7 },
+                new EnemyModule { Kind = "thruster", LocalOffset = new Vector2(-52, 0), Size = new Vector2(18, 22), MaxHealth = 6, Health = 6 },
+                new EnemyModule { Kind = "weapon", LocalOffset = new Vector2(28, -18), Size = new Vector2(24, 14), MaxHealth = 6, Health = 6 },
+                new EnemyModule { Kind = "weapon", LocalOffset = new Vector2(28, 18), Size = new Vector2(24, 14), MaxHealth = 6, Health = 6 },
+            },
+            _ => new[]
+            {
+                new EnemyModule { Kind = "core", LocalOffset = Vector2.Zero, Size = new Vector2(34, 34), MaxHealth = 16, Health = 16 },
+                new EnemyModule { Kind = "armor", LocalOffset = new Vector2(-32, 0), Size = new Vector2(28, 34), MaxHealth = 9, Health = 9 },
+                new EnemyModule { Kind = "armor", LocalOffset = new Vector2(0, -30), Size = new Vector2(30, 18), MaxHealth = 7, Health = 7 },
+                new EnemyModule { Kind = "armor", LocalOffset = new Vector2(0, 30), Size = new Vector2(30, 18), MaxHealth = 7, Health = 7 },
+                new EnemyModule { Kind = "thruster", LocalOffset = new Vector2(-58, 0), Size = new Vector2(20, 24), MaxHealth = 7, Health = 7 },
+                new EnemyModule { Kind = "weapon", LocalOffset = new Vector2(34, -22), Size = new Vector2(26, 16), MaxHealth = 7, Health = 7 },
+                new EnemyModule { Kind = "weapon", LocalOffset = new Vector2(34, 22), Size = new Vector2(26, 16), MaxHealth = 7, Health = 7 },
+            },
+        };
+        target.Modules.AddRange(modules);
+        target.MaxHealth = target.Modules.Sum(module => module.MaxHealth);
+        target.Health = target.MaxHealth;
+        return target;
     }
 
     public void Exit()
@@ -192,7 +321,10 @@ public partial class SpaceTest : Node2D
         var powerScale = Mathf.Clamp((float)(_world.GetShipPowerRatio() * thermalPenalty), 0.0f, 1.0f);
         _weaponCooldown = Math.Max(0.0, _weaponCooldown - delta);
         ApplyShipMotion(metrics, powerScale, (float)delta);
+        _weaponProfile = BuildWeaponProfile();
         _battleHeat = Math.Min(_battleHeatCapacity * 1.8, _battleHeat + metrics.Heat * _appliedForceRatio * delta * 0.45);
+        MoveTargets((float)delta);
+        UpdateCamera((float)delta);
 
         for (var index = _projectiles.Count - 1; index >= 0; index--)
         {
@@ -207,12 +339,34 @@ public partial class SpaceTest : Node2D
                     break;
                 if (target.Health <= 0.0)
                     continue;
-                if (projectile.Position.DistanceTo(target.Position) >= 24.0f)
+                var hitModule = FindTargetModuleAt(target, projectile.Position);
+                if (hitModule is null)
                     continue;
 
-                var shotDamage = metrics.Damage * (0.55 + 0.45 * powerScale);
-                target.Health = Math.Max(0.0, target.Health - shotDamage);
+                var shotDamage = projectile.Damage > 0.0
+                    ? projectile.Damage
+                    : metrics.Damage * (0.55 + 0.45 * powerScale);
+                hitModule.Health = Math.Max(0.0, hitModule.Health - shotDamage);
+                hitModule.Enabled = hitModule.Health > 0.0;
+                if (hitModule.Kind == "core" && hitModule.Health <= 0.0)
+                {
+                    foreach (var module in target.Modules)
+                    {
+                        module.Health = 0.0;
+                        module.Enabled = false;
+                    }
+                    target.Health = 0.0;
+                }
+                else
+                {
+                    target.Health = target.Modules.Sum(module => module.Health);
+                }
                 removeProjectile = true;
+                if (hitModule.Health <= 0.0)
+                {
+                    var label = EnemyModuleLabel(hitModule.Kind);
+                    _world.Announce($"试航区：{target.Name} 的{label}被击毁。" + (hitModule.Kind == "core" ? "敌舰瘫痪。" : ""));
+                }
                 if (target.Health <= 0.0)
                 {
                     _score++;
@@ -246,15 +400,26 @@ public partial class SpaceTest : Node2D
             target.FireTimer -= delta;
             if (target.FireTimer > 0.0)
                 continue;
-            target.FireTimer = 1.6 + target.Position.X / 1500.0;
-            var direction = (_playerPosition - target.Position).Normalized();
-            _projectiles.Add(new Projectile
+            var weapons = target.Modules.Where(module => module.Kind == "weapon" && module.Health > 0.0).ToArray();
+            if (weapons.Length == 0)
             {
-                Position = target.Position + direction * 22.0f,
-                Velocity = direction * 185.0f,
-                Life = 4.0,
-                FromPlayer = false,
-            });
+                target.FireTimer = 0.75;
+                continue;
+            }
+            target.FireTimer = 1.35 + target.Position.X / 1800.0;
+            foreach (var weapon in weapons)
+            {
+                var mount = TargetModuleWorldCenter(target, weapon);
+                var direction = (_playerPosition - mount).Normalized();
+                _projectiles.Add(new Projectile
+                {
+                    Position = mount + direction * 14.0f,
+                    Velocity = direction * 190.0f,
+                    Life = 4.0,
+                    Damage = 3.5,
+                    FromPlayer = false,
+                });
+            }
         }
 
         for (var index = _projectiles.Count - 1; index >= 0; index--)
@@ -262,10 +427,17 @@ public partial class SpaceTest : Node2D
             var projectile = _projectiles[index];
             if (projectile.FromPlayer || projectile.Position.DistanceTo(_playerPosition) >= 24.0f)
                 continue;
-            var incomingDamage = 3.5;
+            var incomingDamage = projectile.Damage > 0.0 ? projectile.Damage : 3.5;
             var shieldDamage = Math.Min(_playerShield, incomingDamage);
             _playerShield -= shieldDamage;
             _playerHull = Math.Max(0.0, _playerHull - (incomingDamage - shieldDamage));
+            var damagedModule = FindPlayerModuleAt(projectile.Position);
+            if (damagedModule is not null && damagedModule.Kind != "core" && damagedModule.Enabled)
+            {
+                _disabledShipModules.Add(damagedModule.Id);
+                _world.Announce($"敌方火力击毁我方{ModuleGraph.Definitions[damagedModule.Kind].Label}，该部件已离线。");
+                _weaponProfile = BuildWeaponProfile();
+            }
             _projectiles.RemoveAt(index);
             if (_playerHull <= 0.0)
                 EnterDefeat();
@@ -282,22 +454,23 @@ public partial class SpaceTest : Node2D
         _phaseTimer = 0.0;
         _projectiles.Clear();
         _playerVelocity *= 0.25f;
-        _world.AwardSalvage();
-        _world.Announce("试航区清场完成：残骸已经标记。按 Enter 返回模块实验室，或按 R 重新挑战。");
+        _world.AwardSalvage(_expeditionStage);
+        _world.Announce($"{_world.GetExpeditionName(_expeditionStage)}清场完成：残骸已经标记。返回航线图选择下一段，或按 R 重新挑战。");
     }
 
     private void StartNextWave()
     {
-        if (_expeditionStage >= 2)
+        if (_expeditionStage >= 3)
         {
-            _world.Announce("风暴闸门暂时没有更深层信号。返回模块实验室继续改装，下一次远征会读取新的蓝图。");
+            _world.Announce("档案环暂时没有更深层信号。返回航线图查看已完成的远征记录。");
             return;
         }
 
         _expeditionStage++;
+        _world.SelectExpeditionStage(_expeditionStage);
         ConfigureTargetWave(_expeditionStage);
         ResetCombatState();
-        _world.Announce("你进入了风暴闸门：哨卫编队已锁定，当前航段奖励会在清场后再次结算。");
+        _world.Announce($"你进入了「{_world.GetExpeditionName(_expeditionStage)}」：{_world.GetExpeditionBrief(_expeditionStage)}。");
     }
 
     private void RestartCurrentWave()
@@ -319,6 +492,130 @@ public partial class SpaceTest : Node2D
         _world.RecordCombatLoss();
     }
 
+    private void MoveTargets(float delta)
+    {
+        foreach (var target in _targets)
+        {
+            if (target.Health <= 0.0)
+                continue;
+
+            var toPlayer = _playerPosition - target.Position;
+            var distance = toPlayer.Length();
+            if (distance <= 0.01f)
+                continue;
+
+            var desiredHeading = toPlayer.Angle();
+            var turn = Mathf.Wrap(desiredHeading - target.Heading, -Mathf.Pi, Mathf.Pi);
+            target.Heading += Mathf.Clamp(turn, -1.8f * delta, 1.8f * delta);
+            var thrusterCount = target.Modules.Count(module => module.Kind == "thruster" && module.Health > 0.0);
+            var speed = thrusterCount == 0 ? 0.0f : Mathf.Clamp(26.0f + thrusterCount * 18.0f, 26.0f, 70.0f);
+            var desiredDistance = 360.0f + (target.Name.GetHashCode() & 95);
+            var approach = Mathf.Clamp((distance - desiredDistance) / 180.0f, -0.35f, 1.0f);
+            var thrust = new Vector2(Mathf.Cos(target.Heading), Mathf.Sin(target.Heading)) * speed * approach;
+            target.Velocity = target.Velocity.MoveToward(thrust, 55.0f * delta);
+            target.Position += target.Velocity * delta;
+            target.Position.X = Mathf.Clamp(target.Position.X, 160.0f, WorldWidth - 160.0f);
+            target.Position.Y = Mathf.Clamp(target.Position.Y, 140.0f, WorldHeight - 140.0f);
+        }
+    }
+
+    private void UpdateCamera(float delta)
+    {
+        var halfView = new Vector2(ViewWidth, ViewHeight) * 0.5f / _cameraZoom;
+        var min = halfView + new Vector2(24.0f, 24.0f);
+        var max = new Vector2(WorldWidth, WorldHeight) - halfView - new Vector2(24.0f, 24.0f);
+        var desired = _playerPosition;
+        desired.X = Mathf.Clamp(desired.X, min.X, Math.Max(min.X, max.X));
+        desired.Y = Mathf.Clamp(desired.Y, min.Y, Math.Max(min.Y, max.Y));
+        _cameraPosition = _cameraPosition.Lerp(desired, Mathf.Clamp(delta * 5.0f, 0.0f, 1.0f));
+        ClampCameraPosition();
+    }
+
+    private void ClampCameraPosition()
+    {
+        var halfView = new Vector2(ViewWidth, ViewHeight) * 0.5f / _cameraZoom;
+        var min = halfView + new Vector2(24.0f, 24.0f);
+        var max = new Vector2(WorldWidth, WorldHeight) - halfView - new Vector2(24.0f, 24.0f);
+        _cameraPosition.X = Mathf.Clamp(_cameraPosition.X, min.X, Math.Max(min.X, max.X));
+        _cameraPosition.Y = Mathf.Clamp(_cameraPosition.Y, min.Y, Math.Max(min.Y, max.Y));
+    }
+
+    private Vector2 ScreenToWorld(Vector2 screenPosition)
+    {
+        return _cameraPosition + (screenPosition - new Vector2(ViewWidth, ViewHeight) * 0.5f) / _cameraZoom;
+    }
+
+    private Vector2 WorldToScreen(Vector2 worldPosition)
+    {
+        return (worldPosition - _cameraPosition) * _cameraZoom + new Vector2(ViewWidth, ViewHeight) * 0.5f;
+    }
+
+    private EnemyModule? FindTargetModuleAt(Target target, Vector2 worldPosition)
+    {
+        var local = (worldPosition - target.Position).Rotated(-target.Heading);
+        EnemyModule? best = null;
+        var bestDistance = float.MaxValue;
+        foreach (var module in target.Modules)
+        {
+            if (module.Health <= 0.0)
+                continue;
+            var half = module.Size * 0.5f;
+            var delta = local - module.LocalOffset;
+            if (Mathf.Abs(delta.X) > half.X || Mathf.Abs(delta.Y) > half.Y)
+                continue;
+            var distance = delta.LengthSquared();
+            if (distance < bestDistance)
+            {
+                best = module;
+                bestDistance = distance;
+            }
+        }
+
+        return best;
+    }
+
+    private ModuleInstance? FindPlayerModuleAt(Vector2 worldPosition)
+    {
+        var core = _world.ShipGraph.Modules.FirstOrDefault(module => module.Kind == "core");
+        if (core is null)
+            return null;
+        var local = (worldPosition - _playerPosition).Rotated(-_playerHeading);
+        var coreCenter = GridCenter(core);
+        ModuleInstance? best = null;
+        var bestDistance = float.MaxValue;
+        foreach (var module in _world.ShipGraph.Modules)
+        {
+            if (_disabledShipModules.Contains(module.Id))
+                continue;
+            var footprint = _world.ShipGraph.GetFootprint(module.Kind, module.Rotation);
+            var half = new Vector2(footprint.X * 9.0f, footprint.Y * 9.0f);
+            var center = (GridCenter(module) - coreCenter) * 18.0f;
+            var delta = local - center;
+            if (Mathf.Abs(delta.X) > half.X || Mathf.Abs(delta.Y) > half.Y)
+                continue;
+            var distance = delta.LengthSquared();
+            if (distance < bestDistance)
+            {
+                best = module;
+                bestDistance = distance;
+            }
+        }
+
+        return best;
+    }
+
+    private Vector2 TargetModuleWorldCenter(Target target, EnemyModule module) =>
+        target.Position + module.LocalOffset.Rotated(target.Heading);
+
+    private static string EnemyModuleLabel(string kind) => kind switch
+    {
+        "core" => "核心模块",
+        "thruster" => "引擎模块",
+        "weapon" => "武器模块",
+        "armor" => "装甲模块",
+        _ => "模块",
+    };
+
     private void ApplyShipMotion(ModuleMetrics metrics, float powerScale, float delta)
     {
         var throttleInput = 0.0f;
@@ -328,12 +625,13 @@ public partial class SpaceTest : Node2D
             throttleInput -= 1.0f;
 
         var yawInput = 0.0f;
-        if (Input.IsKeyPressed(Key.A) || Input.IsKeyPressed(Key.Left))
+        if (Input.IsKeyPressed(Key.A) || Input.IsKeyPressed(Key.Left) || Input.IsKeyPressed(Key.Q))
             yawInput -= 1.0f;
-        if (Input.IsKeyPressed(Key.D) || Input.IsKeyPressed(Key.Right))
+        if (Input.IsKeyPressed(Key.D) || Input.IsKeyPressed(Key.Right) || Input.IsKeyPressed(Key.E))
             yawInput += 1.0f;
 
         var bodyThrusters = BuildThrusterProfile();
+        _thrusterProfile = bodyThrusters;
         var forceSum = Vector2.Zero;
         var installedThrust = 0.0f;
         var torqueCapacity = 0.0f;
@@ -359,6 +657,7 @@ public partial class SpaceTest : Node2D
                 {
                     forceSum += worldForce * (thruster.Power * activation);
                     _forwardThrust += thruster.Power * activation;
+                    thruster.Activation = Mathf.Max(thruster.Activation, activation);
                     active.Add(thruster);
                 }
             }
@@ -369,6 +668,7 @@ public partial class SpaceTest : Node2D
                 {
                     forceSum += worldForce * (thruster.Power * activation);
                     _reverseThrust += thruster.Power * activation;
+                    thruster.Activation = Mathf.Max(thruster.Activation, activation);
                     active.Add(thruster);
                 }
             }
@@ -380,6 +680,7 @@ public partial class SpaceTest : Node2D
                 var activation = Mathf.Min(1.0f, Mathf.Abs(thruster.Torque)) * Mathf.Abs(yawInput);
                 forceSum += worldForce * (thruster.Power * activation * 0.65f);
                 torqueSum += thruster.Torque * thruster.Power * activation;
+                thruster.Activation = Mathf.Max(thruster.Activation, activation * 0.65f);
                 active.Add(thruster);
                 if (yawInput < 0.0f)
                     _leftTurnThrust += thruster.Power * activation;
@@ -389,11 +690,13 @@ public partial class SpaceTest : Node2D
         }
 
         _activeThrusters = active.Count;
+        _turnCapacity = torqueCapacity;
         if (forceSum.LengthSquared() > 0.0001f && installedThrust > 0.0f)
         {
             _appliedForceDirection = forceSum.Normalized();
             _appliedForceRatio = Mathf.Clamp(forceSum.Length() / installedThrust, 0.0f, 1.25f);
-            var acceleration = (30.0f + (float)metrics.Thrust * 17.0f) * powerScale * _appliedForceRatio;
+            var massResponse = Mathf.Clamp(34.0f / Mathf.Max(1.0f, (float)metrics.Mass), 0.35f, 1.35f);
+            var acceleration = (30.0f + (float)metrics.Thrust * 17.0f) * massResponse * powerScale * _appliedForceRatio;
             _playerVelocity += _appliedForceDirection * acceleration * delta;
         }
         else
@@ -410,9 +713,14 @@ public partial class SpaceTest : Node2D
             _playerVelocity = _playerVelocity.Normalized() * maxSpeed;
 
         var torqueRatio = torqueCapacity > 0.0f ? Mathf.Clamp(torqueSum / torqueCapacity, -1.0f, 1.0f) : 0.0f;
-        _playerAngularVelocity += torqueRatio * (1.1f + (float)metrics.Thrust * 0.12f) * powerScale * delta;
-        _playerAngularVelocity = Mathf.Clamp(_playerAngularVelocity, -2.8f, 2.8f);
-        _playerAngularVelocity = Mathf.MoveToward(_playerAngularVelocity, 0.0f, 1.8f * delta);
+        // Keep angular momentum for a few frames. The old damping value was larger
+        // than the per-frame engine torque, so A/D appeared to do nothing at 60 FPS.
+        var massResponseForTurn = Mathf.Clamp(34.0f / Mathf.Max(1.0f, (float)metrics.Mass), 0.35f, 1.35f);
+        var torqueResponse = (8.0f + (float)metrics.Thrust * 0.5f) * massResponseForTurn;
+        _playerAngularVelocity += torqueRatio * torqueResponse * powerScale * delta;
+        _playerAngularVelocity = Mathf.Clamp(_playerAngularVelocity, -4.2f, 4.2f);
+        var angularDamping = yawInput == 0.0f ? 0.65f : 0.16f;
+        _playerAngularVelocity = Mathf.MoveToward(_playerAngularVelocity, 0.0f, angularDamping * delta);
         _playerHeading += _playerAngularVelocity * delta;
         if (_playerHeading > Mathf.Pi)
             _playerHeading -= Mathf.Tau;
@@ -421,8 +729,8 @@ public partial class SpaceTest : Node2D
 
         _playerPosition += _playerVelocity * delta;
         var previousPosition = _playerPosition;
-        _playerPosition.X = Mathf.Clamp(_playerPosition.X, 300.0f, 1170.0f);
-        _playerPosition.Y = Mathf.Clamp(_playerPosition.Y, 130.0f, 610.0f);
+        _playerPosition.X = Mathf.Clamp(_playerPosition.X, 150.0f, WorldWidth - 150.0f);
+        _playerPosition.Y = Mathf.Clamp(_playerPosition.Y, 140.0f, WorldHeight - 140.0f);
         if (!Mathf.IsEqualApprox(previousPosition.X, _playerPosition.X))
             _playerVelocity.X *= -0.25f;
         if (!Mathf.IsEqualApprox(previousPosition.Y, _playerPosition.Y))
@@ -445,10 +753,11 @@ public partial class SpaceTest : Node2D
         if (core is null)
             return profile;
 
-        var coreCenter = GridCenter(core);
+        var centerOfMass = GetCenterOfMass();
+        var operationalIds = _world.ShipGraph.GetOperationalModuleIds();
         foreach (var module in _world.ShipGraph.Modules)
         {
-            if (module.Kind != "thruster")
+            if (module.Kind != "thruster" || !operationalIds.Contains(module.Id) || _disabledShipModules.Contains(module.Id))
                 continue;
 
             var exhaustDirection = module.Rotation switch
@@ -459,7 +768,7 @@ public partial class SpaceTest : Node2D
                 _ => Vector2.Left,
             };
             var localForce = -exhaustDirection;
-            var localOffset = GridCenter(module) - coreCenter;
+            var localOffset = GridCenter(module) - centerOfMass;
             var torque = localOffset.X * localForce.Y - localOffset.Y * localForce.X;
             profile.Add(new ThrusterVector
             {
@@ -471,6 +780,81 @@ public partial class SpaceTest : Node2D
         }
 
         return profile;
+    }
+
+    private List<WeaponMount> BuildWeaponProfile()
+    {
+        var profile = new List<WeaponMount>();
+        ModuleInstance? core = null;
+        foreach (var module in _world.ShipGraph.Modules)
+        {
+            if (module.Kind == "core")
+            {
+                core = module;
+                break;
+            }
+        }
+
+        if (core is null)
+            return profile;
+
+        var centerOfMass = GetCenterOfMass();
+        var operationalIds = _world.ShipGraph.GetOperationalModuleIds();
+        foreach (var module in _world.ShipGraph.Modules)
+        {
+            if (!IsWeaponKind(module.Kind) || !operationalIds.Contains(module.Id) || _disabledShipModules.Contains(module.Id))
+                continue;
+
+            var facing = module.Rotation switch
+            {
+                0 => Vector2.Up,
+                1 => Vector2.Right,
+                2 => Vector2.Down,
+                _ => Vector2.Left,
+            };
+            profile.Add(new WeaponMount
+            {
+                LocalOffset = GridCenter(module) - centerOfMass,
+                LocalDirection = facing,
+                Damage = (float)ModuleGraph.Definitions[module.Kind].Damage,
+            });
+        }
+
+        return profile;
+    }
+
+    private Vector2 ResolveWeaponDirection(WeaponMount weapon, Vector2 mount, Vector2 target)
+    {
+        var hardpointDirection = weapon.LocalDirection.Rotated(_playerHeading).Normalized();
+        var desiredDirection = target - mount;
+        if (desiredDirection.LengthSquared() <= 0.001f)
+            return hardpointDirection;
+
+        desiredDirection = desiredDirection.Normalized();
+        // Weapons can track a little, but their module orientation still matters:
+        // a gun rotated to the stern cannot instantly fire through the bow.
+        var trackingAngle = hardpointDirection.AngleTo(desiredDirection);
+        return hardpointDirection.Rotated(Mathf.Clamp(trackingAngle, -1.30f, 1.30f)).Normalized();
+    }
+
+    private static bool IsWeaponKind(string kind) => kind is "laser" or "cannon" or "beam" or "railgun" or "missile" or "point_defense";
+
+    private Vector2 GetCenterOfMass()
+    {
+        var operationalIds = _world.ShipGraph.GetOperationalModuleIds();
+        var weightedPosition = Vector2.Zero;
+        var totalMass = 0.0f;
+        foreach (var module in _world.ShipGraph.Modules)
+        {
+            if (!operationalIds.Contains(module.Id))
+                continue;
+
+            var mass = (float)ModuleGraph.Definitions[module.Kind].Mass;
+            weightedPosition += GridCenter(module) * mass;
+            totalMass += mass;
+        }
+
+        return totalMass > 0.0f ? weightedPosition / totalMass : Vector2.Zero;
     }
 
     private Vector2 GridCenter(ModuleInstance module)
@@ -507,7 +891,18 @@ public partial class SpaceTest : Node2D
             }
         }
 
-        if (@event is InputEventMouseButton mouseButton && mouseButton.Pressed && mouseButton.ButtonIndex == MouseButton.Left)
+        if (@event is InputEventMouseButton mouseButton && mouseButton.Pressed &&
+            (mouseButton.ButtonIndex == MouseButton.WheelUp || mouseButton.ButtonIndex == MouseButton.WheelDown))
+        {
+            var cursorWorld = ScreenToWorld(mouseButton.Position);
+            _cameraZoom = Mathf.Clamp(_cameraZoom * (mouseButton.ButtonIndex == MouseButton.WheelUp ? 1.12f : 1.0f / 1.12f), 0.58f, 1.18f);
+            _cameraPosition = cursorWorld - (mouseButton.Position - new Vector2(ViewWidth, ViewHeight) * 0.5f) / _cameraZoom;
+            ClampCameraPosition();
+            QueueRedraw();
+            return true;
+        }
+
+        if (@event is InputEventMouseButton fireButton && fireButton.Pressed && fireButton.ButtonIndex == MouseButton.Left)
         {
             var metrics = _world.GetMetrics();
             if (_phase != CombatPhase.Active || metrics.Damage <= 0.0 || _weaponCooldown > 0.0 || _playerHull <= 0.0)
@@ -517,16 +912,28 @@ public partial class SpaceTest : Node2D
                 return true;
             }
 
-            var direction = (mouseButton.Position - _playerPosition).Normalized();
+            var weaponProfile = BuildWeaponProfile();
+            if (weaponProfile.Count == 0)
+            {
+                _world.Announce("武器已与核心断开：重新连接激光或动能炮后才能开火。");
+                return true;
+            }
+
             _weaponCooldown = Math.Max(0.08, 0.35 - metrics.Damage * 0.01);
             _battleHeat = Math.Min(_battleHeatCapacity * 1.8, _battleHeat + metrics.Heat * 0.08);
-            _projectiles.Add(new Projectile
+            foreach (var weapon in weaponProfile)
             {
-                Position = _playerPosition + direction * 24.0f,
-                Velocity = direction * 440.0f,
-                Life = 2.0,
-                FromPlayer = true,
-            });
+                var mount = _playerPosition + (weapon.LocalOffset * 18.0f).Rotated(_playerHeading);
+                var direction = ResolveWeaponDirection(weapon, mount, ScreenToWorld(fireButton.Position));
+                _projectiles.Add(new Projectile
+                {
+                    Position = mount + direction * 18.0f,
+                    Velocity = direction * 440.0f,
+                    Life = 2.0,
+                    Damage = weapon.Damage * (0.55 + 0.45 * _world.GetShipPowerRatio()),
+                    FromPlayer = true,
+                });
+            }
             return true;
         }
 
@@ -561,21 +968,57 @@ public partial class SpaceTest : Node2D
         if (!_active)
             return;
 
-        DrawRect(new Rect2(Vector2.Zero, new Vector2(1280.0f, 720.0f)), new Color("#070b12"));
+        DrawSetTransform(Vector2.Zero, 0.0f, Vector2.One);
+        DrawRect(new Rect2(Vector2.Zero, new Vector2(ViewWidth, ViewHeight)), new Color("#050811"));
+        DrawRect(new Rect2(Vector2.Zero, new Vector2(ViewWidth, 8.0f)), new Color("#192a3b", 0.75f));
+        DrawRect(new Rect2(new Vector2(0.0f, ViewHeight - 8.0f), new Vector2(ViewWidth, 8.0f)), new Color("#192a3b", 0.75f));
+        DrawSetTransform(new Vector2(ViewWidth, ViewHeight) * 0.5f - _cameraPosition * _cameraZoom, 0.0f, new Vector2(_cameraZoom, _cameraZoom));
+        DrawSectorBackdrop();
         DrawStars();
         DrawMapNodes();
         DrawTargets();
         DrawProjectiles();
         DrawPlayer();
+        DrawSetTransform(Vector2.Zero, 0.0f, Vector2.One);
     }
 
     private void DrawStars()
     {
-        for (var i = 0; i < 55; i++)
+        for (var i = 0; i < 180; i++)
         {
-            var x = (i * 83 + 29) % 1280;
-            var y = (i * 47 + 43) % 720;
-            DrawCircle(new Vector2(x, y), 1.0f + i % 2, new Color("#1b2b3d"));
+            var x = (i * 137 + 79) % (int)WorldWidth;
+            var y = (i * 89 + 53) % (int)WorldHeight;
+            var size = i % 9 == 0 ? 3.0f : i % 3 == 0 ? 2.0f : 1.0f;
+            var color = i % 7 == 0 ? new Color("#9cb2ce", 0.8f) : new Color("#34475c", 0.75f);
+            DrawCircle(new Vector2(x, y), size, color);
+        }
+    }
+
+    private void DrawSectorBackdrop()
+    {
+        for (var x = 0.0f; x <= WorldWidth; x += 160.0f)
+            DrawLine(new Vector2(x, 0.0f), new Vector2(x, WorldHeight), new Color("#152434", 0.24f), 1.0f);
+        for (var y = 0.0f; y <= WorldHeight; y += 160.0f)
+            DrawLine(new Vector2(0.0f, y), new Vector2(WorldWidth, y), new Color("#152434", 0.24f), 1.0f);
+
+        DrawCircle(new Vector2(460.0f, 420.0f), 150.0f, new Color("#18334a", 0.32f));
+        DrawCircle(new Vector2(460.0f, 420.0f), 150.0f, new Color("#4d88a3", 0.35f), false, 2.0f);
+        DrawCircle(new Vector2(2420.0f, 1450.0f), 220.0f, new Color("#392946", 0.26f));
+        DrawCircle(new Vector2(2420.0f, 1450.0f), 220.0f, new Color("#9a6bb0", 0.32f), false, 2.0f);
+
+        for (var i = 0; i < 26; i++)
+        {
+            var center = new Vector2((i * 173 + 310) % 2250 + 190, (i * 97 + 260) % 1350 + 180);
+            var radius = 9.0f + (i % 5) * 4.0f;
+            var points = new Vector2[7];
+            for (var point = 0; point < points.Length; point++)
+            {
+                var angle = point * Mathf.Tau / points.Length;
+                var wobble = 0.75f + ((i + point * 3) % 5) * 0.08f;
+                points[point] = center + new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * radius * wobble;
+            }
+            DrawColoredPolygon(points, new Color("#263847", 0.82f));
+            DrawPolyline(points.Append(points[0]).ToArray(), new Color("#5a7181", 0.55f), 1.2f);
         }
     }
 
@@ -583,10 +1026,11 @@ public partial class SpaceTest : Node2D
     {
         var route = new[]
         {
-            new Vector2(190.0f, 170.0f),
-            new Vector2(480.0f, 350.0f),
-            new Vector2(840.0f, 260.0f),
-            new Vector2(1110.0f, 430.0f),
+            new Vector2(230.0f, 310.0f),
+            new Vector2(820.0f, 690.0f),
+            new Vector2(1450.0f, 420.0f),
+            new Vector2(2140.0f, 820.0f),
+            new Vector2(2550.0f, 1450.0f),
         };
 
         for (var index = 0; index < route.Length - 1; index++)
@@ -598,12 +1042,14 @@ public partial class SpaceTest : Node2D
                 : index == 2 && _world.StormGateUnlocked
                     ? new Color("#f2cc60")
                     : new Color("#57718d");
-            DrawCircle(route[index], 12.0f, nodeColor);
-            DrawCircle(route[index], 18.0f, new Color("#25384b"), false, 1.0f);
+            DrawCircle(route[index], index == 0 ? 24.0f : 16.0f, nodeColor);
+            DrawCircle(route[index], index == 0 ? 34.0f : 26.0f, new Color("#25384b"), false, 2.0f);
         }
 
-        LabelText("种子前哨", route[1] + new Vector2(-42.0f, 36.0f), 11, new Color("#a8b3c2"));
-        LabelText(_world.StormGateUnlocked ? "风暴闸门 · 已解锁" : "风暴闸门 · 未知", route[2] + new Vector2(-52.0f, 34.0f), 11, _world.StormGateUnlocked ? new Color("#f2cc60") : new Color("#a8b3c2"));
+        LabelText("起始坐标", route[0] + new Vector2(-40.0f, 52.0f), 13, new Color("#b7c7d4"));
+        LabelText("种子前哨", route[1] + new Vector2(-48.0f, 42.0f), 13, new Color("#a8b3c2"));
+        LabelText(_world.StormGateUnlocked ? "风暴闸门 · 已解锁" : "风暴闸门 · 未知", route[2] + new Vector2(-72.0f, 42.0f), 13, _world.StormGateUnlocked ? new Color("#f2cc60") : new Color("#a8b3c2"));
+        LabelText("档案环", route[4] + new Vector2(-42.0f, 46.0f), 13, new Color("#a8b3c2"));
     }
 
     private void DrawTargets()
@@ -612,14 +1058,51 @@ public partial class SpaceTest : Node2D
         {
             var alive = target.Health > 0.0;
             var targetColor = alive ? new Color("#f07c8e") : new Color("#344454");
-            DrawCircle(target.Position, 22.0f, targetColor);
-            DrawCircle(target.Position, 29.0f, new Color(targetColor, 0.35f), false, 2.0f);
+            foreach (var module in target.Modules)
+            {
+                var center = TargetModuleWorldCenter(target, module);
+                var color = module.Health > 0.0 ? module.Kind switch
+                {
+                    "core" => new Color("#f07c8e"),
+                    "thruster" => new Color("#cf7bff"),
+                    "weapon" => new Color("#f2cc60"),
+                    _ => new Color("#8c9aaa"),
+                } : new Color("#26323e");
+                var half = module.Size * 0.5f;
+                var corners = new[]
+                {
+                    center + new Vector2(-half.X, -half.Y).Rotated(target.Heading),
+                    center + new Vector2(half.X, -half.Y).Rotated(target.Heading),
+                    center + new Vector2(half.X, half.Y).Rotated(target.Heading),
+                    center + new Vector2(-half.X, half.Y).Rotated(target.Heading),
+                };
+                DrawColoredPolygon(corners, color);
+                DrawPolyline(new[] { corners[0], corners[1], corners[2], corners[3], corners[0] }, new Color("#d8e0e7", 0.65f), 1.1f);
+                if (module.Kind == "core" && module.Health > 0.0)
+                    DrawCircle(center, 5.0f, new Color("#fff0b2"));
+                if (module.Kind == "weapon" && module.Health > 0.0)
+                {
+                    var barrel = center + new Vector2(13.0f, 0).Rotated(target.Heading);
+                    DrawLine(center, barrel, new Color("#ffe9a6"), 2.0f);
+                }
+                if (module.Kind == "thruster" && module.Health > 0.0)
+                {
+                    var exhaust = center - new Vector2(12.0f, 0).Rotated(target.Heading);
+                    DrawLine(center, exhaust, new Color("#f2cc60", 0.8f), 2.0f);
+                }
+                if (module.Health <= 0.0)
+                {
+                    DrawLine(corners[0], corners[2], new Color("#f07c8e", 0.75f), 2.0f);
+                    DrawLine(corners[1], corners[3], new Color("#f07c8e", 0.75f), 2.0f);
+                }
+            }
+            DrawCircle(target.Position, 42.0f, new Color(targetColor, alive ? 0.25f : 0.1f), false, 1.5f);
             if (alive)
             {
-                DrawRect(new Rect2(target.Position + new Vector2(-24.0f, -40.0f), new Vector2(48.0f, 4.0f)), new Color("#1d2834"));
-                DrawRect(new Rect2(target.Position + new Vector2(-24.0f, -40.0f), new Vector2(48.0f * (float)(target.Health / target.MaxHealth), 4.0f)), new Color("#f07c8e"));
+                DrawRect(new Rect2(target.Position + new Vector2(-30.0f, -54.0f), new Vector2(60.0f, 5.0f)), new Color("#1d2834"));
+                DrawRect(new Rect2(target.Position + new Vector2(-30.0f, -54.0f), new Vector2(60.0f * (float)(target.Health / target.MaxHealth), 5.0f)), new Color("#f07c8e"));
             }
-            LabelText(target.Name, target.Position + new Vector2(-26.0f, 42.0f), 9, new Color("#9eabbc"));
+            LabelText(target.Name, target.Position + new Vector2(-42.0f, 56.0f), 9, new Color("#9eabbc"));
         }
     }
 
@@ -636,24 +1119,30 @@ public partial class SpaceTest : Node2D
     private void DrawPlayer()
     {
         var angle = _playerHeading;
-        var nose = _playerPosition + new Vector2(28.0f, 0.0f).Rotated(angle);
-        var left = _playerPosition + new Vector2(-18.0f, -16.0f).Rotated(angle);
-        var right = _playerPosition + new Vector2(-18.0f, 16.0f).Rotated(angle);
-        var polygon = new[] { nose, left, right };
-        DrawColoredPolygon(polygon, new Color("#f4f1de"));
-        var outline = new[] { nose, left, right, nose };
-        DrawPolyline(outline, new Color("#65c18c"), 2.0f);
+        DrawShipBody(angle);
 
         // Render the actual engine mounts on the hull. The player can see which
         // engines are behind the center line, which ones are offset for yaw, and
         // why a blueprint with no forward-facing engine cannot reverse.
-        foreach (var thruster in BuildThrusterProfile())
+        foreach (var thruster in _thrusterProfile)
         {
             var mount = _playerPosition + (thruster.LocalOffset * 18.0f).Rotated(angle);
-            var nozzle = mount + thruster.LocalForce.Rotated(angle) * 12.0f;
-            DrawCircle(mount, 4.0f, new Color("#cf7bff", 0.8f));
-            DrawLine(mount, nozzle, new Color("#cf7bff", 0.6f), 2.0f);
+            var forceDirection = thruster.LocalForce.Rotated(angle);
+            var nozzle = mount + forceDirection * 12.0f;
+            var activity = Mathf.Clamp(thruster.Activation, 0.0f, 1.0f);
+            DrawCircle(mount, 4.0f + activity * 2.0f, new Color(0.81f, 0.48f, 1.0f, 0.45f + activity * 0.45f));
+            DrawLine(mount, nozzle, new Color("#cf7bff", 0.35f + activity * 0.65f), 2.0f);
+            if (activity > 0.01f)
+            {
+                var exhaust = -forceDirection;
+                var flameLength = 12.0f + activity * 18.0f;
+                DrawLine(mount - forceDirection * 4.0f, mount + exhaust * flameLength, new Color("#f2cc60", 0.45f + activity * 0.5f), 3.0f);
+            }
         }
+
+        // A short bow marker makes the heading readable even when the ship is
+        // travelling sideways after a differential-thrust turn.
+        DrawLine(_playerPosition, _playerPosition + new Vector2(42.0f, 0.0f).Rotated(angle), new Color("#f4f1de", 0.55f), 1.5f);
 
         var metrics = _world.GetMetrics();
         if (metrics.Shield > 0.0 && _playerShield > 0.0)
@@ -671,13 +1160,80 @@ public partial class SpaceTest : Node2D
         }
         if (metrics.Damage > 0.0)
         {
-            var aimAngle = (GetViewport().GetMousePosition() - _playerPosition).Angle();
-            var cannon = _playerPosition + new Vector2(12.0f, 0.0f).Rotated(aimAngle);
-            DrawCircle(cannon, 4.0f, new Color("#f07c8e"));
-            DrawLine(cannon, cannon + new Vector2(12.0f, 0.0f).Rotated(aimAngle), new Color("#f07c8e", 0.55f), 2.0f);
+            var mousePosition = ScreenToWorld(GetViewport().GetMousePosition());
+            foreach (var weapon in _weaponProfile)
+            {
+                var mount = _playerPosition + (weapon.LocalOffset * 18.0f).Rotated(angle);
+                var hardpointDirection = weapon.LocalDirection.Rotated(angle);
+                var cannon = mount + hardpointDirection * 12.0f;
+                var aimDirection = ResolveWeaponDirection(weapon, cannon, mousePosition);
+                DrawCircle(cannon, 4.0f, new Color("#f07c8e"));
+                DrawLine(cannon, cannon + aimDirection * 12.0f, new Color("#f07c8e", 0.55f), 2.0f);
+            }
         }
     }
 
+    private void DrawShipBody(float angle)
+    {
+        var core = _world.ShipGraph.Modules.FirstOrDefault(module => module.Kind == "core");
+        if (core is null)
+            return;
+
+        var coreCenter = GridCenter(core);
+        var operationalIds = _world.ShipGraph.GetOperationalModuleIds();
+        foreach (var module in _world.ShipGraph.Modules)
+        {
+            var definition = ModuleGraph.Definitions[module.Kind];
+            var footprint = _world.ShipGraph.GetFootprint(module.Kind, module.Rotation);
+            var localCenter = (GridCenter(module) - coreCenter) * 18.0f;
+            var size = new Vector2(Math.Max(10.0f, footprint.X * 18.0f - 3.0f), Math.Max(10.0f, footprint.Y * 18.0f - 3.0f));
+            var center = _playerPosition + localCenter.Rotated(angle);
+            var color = new Color(definition.ColorHex).Lerp(new Color("#f0f4f0"), 0.18f);
+            if (!operationalIds.Contains(module.Id) || _disabledShipModules.Contains(module.Id))
+                color = color.Darkened(0.55f);
+
+            if (module.Kind == "shield")
+            {
+                DrawCircle(center, Math.Min(size.X, size.Y) * 0.48f, new Color(color, 0.48f));
+                DrawArc(center, Math.Min(size.X, size.Y) * 0.48f, 0.0f, Mathf.Tau, 24, color, 1.5f, true);
+                continue;
+            }
+
+            var corners = new[]
+            {
+                new Vector2(-size.X, -size.Y) * 0.5f,
+                new Vector2(size.X, -size.Y) * 0.5f,
+                new Vector2(size.X, size.Y) * 0.5f,
+                new Vector2(-size.X, size.Y) * 0.5f,
+            };
+            for (var index = 0; index < corners.Length; index++)
+                corners[index] = center + corners[index].Rotated(angle);
+            DrawColoredPolygon(corners, color);
+            DrawPolyline(new[] { corners[0], corners[1], corners[2], corners[3], corners[0] }, new Color("#f0f4f0", 0.78f), 1.2f);
+            if (_disabledShipModules.Contains(module.Id))
+            {
+                DrawLine(corners[0], corners[2], new Color("#f07c8e", 0.9f), 2.0f);
+                DrawLine(corners[1], corners[3], new Color("#f07c8e", 0.9f), 2.0f);
+            }
+
+            if (module.Kind is "reactor" or "core")
+            {
+                var diamond = new[]
+                {
+                    center + new Vector2(0, -5).Rotated(angle),
+                    center + new Vector2(5, 0).Rotated(angle),
+                    center + new Vector2(0, 5).Rotated(angle),
+                    center + new Vector2(-5, 0).Rotated(angle),
+                };
+                DrawPolyline(new[] { diamond[0], diamond[1], diamond[2], diamond[3], diamond[0] }, new Color("#fff0b2"), 1.5f);
+            }
+            else if (module.Kind is "cargo" or "hull")
+            {
+                DrawLine(corners[0], corners[2], new Color("#f0f4f0", 0.28f), 1.0f);
+                DrawLine(corners[1], corners[3], new Color("#f0f4f0", 0.28f), 1.0f);
+            }
+        }
+    }
 
     private void LabelText(string text, Vector2 position, int size, Color color)
     {

@@ -18,6 +18,7 @@ public sealed class ModuleDefinition
     public double Damage { get; init; }
     public double Cooling { get; init; }
     public double Storage { get; init; }
+    public double EnergyCapacity { get; init; }
     public double Control { get; init; }
     public double Hull { get; init; }
     public double Shield { get; init; }
@@ -50,6 +51,7 @@ public sealed class ModuleMetrics
     public double Damage { get; init; }
     public double Cooling { get; init; }
     public double Storage { get; init; }
+    public double EnergyCapacity { get; init; }
     public double Control { get; init; }
     public double Hull { get; init; }
     public double Shield { get; init; }
@@ -67,7 +69,7 @@ public sealed class ModuleGraph
             ["solar"] = new() { Kind = "solar", Category = "能源", Size = new(2, 1), Label = "太阳能板", Description = "稳定产出功率，几乎不产生热量", ColorHex = "#f2cc60", Mass = 4, Generation = 5, Consumption = 0.2, Heat = 0.3, Signal = 1, Cost = new() { ["iron"] = 8, ["alloy"] = 0 } },
             ["miner"] = new() { Kind = "miner", Category = "生产", Size = new(2, 1), Label = "采矿臂", Description = "从星球矿脉持续提取铁质碎料", ColorHex = "#65c18c", Mass = 6, Consumption = 1.5, Heat = 1, OreRate = 0.8, Control = 1, Cost = new() { ["iron"] = 12, ["alloy"] = 2 } },
             ["refinery"] = new() { Kind = "refinery", Category = "生产", Size = new(2, 1), Label = "精炼炉", Description = "把铁质碎料转化为合金", ColorHex = "#e58c55", Mass = 8, Consumption = 2.5, Heat = 2, RefineRate = 0.45, Control = 1, Cost = new() { ["iron"] = 18, ["alloy"] = 4 } },
-            ["battery"] = new() { Kind = "battery", Category = "能源", Size = new(1, 2), Label = "储能单元", Description = "稳定网络功率，缓冲生产波动", ColorHex = "#78a6d8", Mass = 5, Consumption = 0.1, Heat = 0.1, Storage = 8, Cost = new() { ["iron"] = 10, ["alloy"] = 2 } },
+            ["battery"] = new() { Kind = "battery", Category = "能源", Size = new(1, 2), Label = "储能单元", Description = "储存电能，短时补足生产网络的功率缺口", ColorHex = "#78a6d8", Mass = 5, Consumption = 0.1, Heat = 0.1, EnergyCapacity = 24, Cost = new() { ["iron"] = 10, ["alloy"] = 2 } },
             ["thruster"] = new() { Kind = "thruster", Category = "机动", Size = new(2, 1), Label = "推进器", Description = "为舰体提供机动推力", ColorHex = "#cf7bff", Mass = 5, Consumption = 2, Heat = 3, Thrust = 4, Signal = 2, Cost = new() { ["iron"] = 16, ["alloy"] = 5 } },
             ["laser"] = new() { Kind = "laser", Category = "武器", Size = new(2, 1), Label = "脉冲激光", Description = "用高热量换取远程打击能力", ColorHex = "#f07c8e", Mass = 5, Consumption = 3, Heat = 5, Damage = 6, Signal = 4, Cost = new() { ["iron"] = 20, ["alloy"] = 7 } },
             ["hull"] = new() { Kind = "hull", Category = "骨架", Size = new(2, 1), Label = "装甲骨架", Description = "增加舰体完整度，承受更多撞击", ColorHex = "#a7b5c4", Mass = 7, Hull = 18, Cost = new() { ["iron"] = 10, ["alloy"] = 1 } },
@@ -76,6 +78,16 @@ public sealed class ModuleGraph
             ["cannon"] = new() { Kind = "cannon", Category = "武器", Size = new(2, 1), Label = "动能炮", Description = "低热量的近程火力，适合持续交战", ColorHex = "#d97676", Mass = 6, Consumption = 2, Heat = 2, Damage = 4, Signal = 1, Cost = new() { ["iron"] = 18, ["alloy"] = 6 } },
             ["shield"] = new() { Kind = "shield", Category = "防御", Size = new(1, 1), Label = "偏转护盾", Description = "消耗功率吸收首轮伤害，代价是持续热量", ColorHex = "#7bb7e8", Mass = 6, Consumption = 3, Heat = 1.5, Shield = 22, Signal = 2, Cost = new() { ["iron"] = 14, ["alloy"] = 6 } },
             ["reactor"] = new() { Kind = "reactor", Category = "能源", Size = new(2, 2), Label = "裂变炉", Description = "高功率能源核心，会提高热量和信号暴露", ColorHex = "#e0b45d", Mass = 10, Generation = 11, Consumption = 1, Heat = 4, Signal = 3, Cost = new() { ["iron"] = 24, ["alloy"] = 8 } },
+            ["armor"] = new() { Kind = "armor", Category = "骨架", Size = new(2, 1), Label = "复合装甲", Description = "厚重的船体装甲，牺牲质量换取更高舰体完整度", ColorHex = "#8998a8", Mass = 9, Hull = 30, Signal = 1, Cost = new() { ["iron"] = 18, ["alloy"] = 4 } },
+            ["generator"] = new() { Kind = "generator", Category = "能源", Size = new(2, 1), Label = "聚变发电机", Description = "持续提供功率，热量和信号暴露高于太阳能板", ColorHex = "#f0b85e", Mass = 7, Generation = 8, Consumption = 0.5, Heat = 2.5, Signal = 2, Cost = new() { ["iron"] = 22, ["alloy"] = 6 } },
+            ["capacitor"] = new() { Kind = "capacitor", Category = "能源", Size = new(1, 1), Label = "武器电容", Description = "储存瞬时电能，提升高耗能武器的持续输出", ColorHex = "#6fa7d8", Mass = 4, Consumption = 0.2, EnergyCapacity = 36, Cost = new() { ["iron"] = 14, ["alloy"] = 4 } },
+            ["sensor"] = new() { Kind = "sensor", Category = "系统", Size = new(1, 1), Label = "深空传感器", Description = "扩大目标锁定距离，暴露更多信号但能提前发现敌人", ColorHex = "#72c7c2", Mass = 3, Consumption = 1, Signal = 8, Control = 2, Cost = new() { ["iron"] = 12, ["alloy"] = 5 } },
+            ["gyro"] = new() { Kind = "gyro", Category = "机动", Size = new(1, 2), Label = "姿态陀螺", Description = "提升转向响应，让非对称舰体更容易保持瞄准", ColorHex = "#b58be3", Mass = 4, Consumption = 1, Heat = 0.8, Control = 5, Cost = new() { ["iron"] = 14, ["alloy"] = 5 } },
+            ["beam"] = new() { Kind = "beam", Category = "武器", Size = new(2, 1), Label = "连续光束", Description = "持续灼烧目标模块，热量高但能稳定压制装甲", ColorHex = "#ff7bb0", Mass = 6, Consumption = 4, Heat = 7, Damage = 8, Signal = 5, Cost = new() { ["iron"] = 26, ["alloy"] = 10 } },
+            ["railgun"] = new() { Kind = "railgun", Category = "武器", Size = new(2, 1), Label = "磁轨炮", Description = "高穿透动能武器，单发伤害高，射击间隔更长", ColorHex = "#e9a56a", Mass = 8, Consumption = 3, Heat = 4, Damage = 10, Signal = 2, Cost = new() { ["iron"] = 28, ["alloy"] = 11 } },
+            ["missile"] = new() { Kind = "missile", Category = "武器", Size = new(2, 1), Label = "导弹舱", Description = "发射追踪弹头，适合攻击远处或转向中的模块", ColorHex = "#d8d27a", Mass = 7, Consumption = 2, Heat = 3, Damage = 14, Signal = 6, Cost = new() { ["iron"] = 24, ["alloy"] = 12 } },
+            ["point_defense"] = new() { Kind = "point_defense", Category = "防御", Size = new(1, 1), Label = "点防御炮", Description = "自动拦截来袭弹药，火力较低但能保护关键模块", ColorHex = "#e28b8b", Mass = 4, Consumption = 2, Heat = 2, Damage = 3, Signal = 2, Cost = new() { ["iron"] = 18, ["alloy"] = 7 } },
+            ["tractor"] = new() { Kind = "tractor", Category = "物流", Size = new(2, 1), Label = "牵引光束", Description = "回收战场残骸并拖拽资源箱，扩大远征回收收益", ColorHex = "#c58cda", Mass = 5, Consumption = 1, Control = 4, Storage = 8, Signal = 3, Cost = new() { ["iron"] = 18, ["alloy"] = 7 } },
         };
 
     public List<ModuleInstance> Modules { get; } = new();
@@ -235,14 +247,60 @@ public sealed class ModuleGraph
 
     public int CountKind(string kind) => Modules.Count(module => module.Kind == kind);
 
+    /// <summary>
+    /// Returns modules that can receive power and control from the core through
+    /// physical links. A detached branch remains in the blueprint, but it cannot
+    /// contribute to production or ship performance until it is connected again.
+    /// </summary>
+    public HashSet<int> GetOperationalModuleIds()
+    {
+        var core = Modules.FirstOrDefault(module => module.Kind == "core" && module.Enabled);
+        if (core is null)
+            return new HashSet<int>();
+
+        var connected = new HashSet<int> { core.Id };
+        var queue = new Queue<int>();
+        queue.Enqueue(core.Id);
+        while (queue.Count > 0)
+        {
+            var current = queue.Dequeue();
+            foreach (var link in Links)
+            {
+                var neighborId = link.FirstId == current ? link.SecondId : link.SecondId == current ? link.FirstId : -1;
+                if (neighborId < 0 || connected.Contains(neighborId))
+                    continue;
+
+                var neighbor = Modules.FirstOrDefault(module => module.Id == neighborId);
+                if (neighbor is null || !neighbor.Enabled)
+                    continue;
+
+                connected.Add(neighborId);
+                queue.Enqueue(neighborId);
+            }
+        }
+
+        return connected;
+    }
+
+    public bool IsOperational(ModuleInstance module) => GetOperationalModuleIds().Contains(module.Id);
+
     public ModuleMetrics GetMetrics()
     {
-        double mass = 0, generation = 0, consumption = 0, heat = 0, thrust = 0, damage = 0, cooling = 0, storage = 0, control = 0, hull = 0, shield = 0, signal = 0;
+        double mass = 0, generation = 0, consumption = 0, heat = 0, thrust = 0, damage = 0, cooling = 0, storage = 0, energyCapacity = 0, control = 0, hull = 0, shield = 0, signal = 0;
         var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        var operationalIds = GetOperationalModuleIds();
         foreach (var module in Modules)
         {
+            if (!module.Enabled)
+                continue;
+
             var definition = Definitions[module.Kind];
+            // Physical mass remains present even when a branch loses power or control.
+            // Only the functional contributions below require a live connection to core.
             mass += definition.Mass;
+            if (!operationalIds.Contains(module.Id))
+                continue;
+
             generation += definition.Generation;
             consumption += definition.Consumption;
             heat += definition.Heat;
@@ -250,6 +308,7 @@ public sealed class ModuleGraph
             damage += definition.Damage;
             cooling += definition.Cooling;
             storage += definition.Storage;
+            energyCapacity += definition.EnergyCapacity;
             control += definition.Control;
             hull += definition.Hull;
             shield += definition.Shield;
@@ -267,6 +326,7 @@ public sealed class ModuleGraph
             Damage = damage,
             Cooling = cooling,
             Storage = storage,
+            EnergyCapacity = energyCapacity,
             Control = control,
             Hull = hull,
             Shield = shield,
@@ -300,23 +360,10 @@ public sealed class ModuleGraph
 
     private double GetIntegrity()
     {
-        var core = Modules.FirstOrDefault(module => module.Kind == "core");
-        if (core is null || Modules.Count == 0)
+        if (Modules.Count == 0)
             return 0;
 
-        var connected = new HashSet<int> { core.Id };
-        var queue = new Queue<int>();
-        queue.Enqueue(core.Id);
-        while (queue.Count > 0)
-        {
-            var current = queue.Dequeue();
-            foreach (var link in Links)
-            {
-                var neighbor = link.FirstId == current ? link.SecondId : link.SecondId == current ? link.FirstId : -1;
-                if (neighbor >= 0 && connected.Add(neighbor))
-                    queue.Enqueue(neighbor);
-            }
-        }
+        var connected = GetOperationalModuleIds();
         return connected.Count * 100.0 / Modules.Count;
     }
 }
