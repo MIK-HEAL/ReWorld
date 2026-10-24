@@ -513,7 +513,7 @@ public partial class UniverseView : Node2D
         }
 
         // 操作提示。
-        DrawString(_font, new Vector2(16, ViewHeight - 46), "W/S 推进 · A/D 转向 · Q/E 平移 · M 造舰 · Tab 航图",
+        DrawString(_font, new Vector2(16, ViewHeight - 46), "W/S 推进 · A/D 转向 · Q/E 平移 · M 造舰",
             HorizontalAlignment.Left, -1, 13, new Color("#6e8d9c"));
         DrawString(_font, new Vector2(16, ViewHeight - 24), "滚轮：近景 / 航行视野 · 左键选择天体 · F11 / Alt+Enter 全屏",
             HorizontalAlignment.Left, -1, 12, new Color("#6e8d9c"));

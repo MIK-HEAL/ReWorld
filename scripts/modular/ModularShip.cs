@@ -150,7 +150,7 @@ public sealed class ModularShip
         return copy;
     }
 
-    /// <summary>重置所有方块耐久到形状满值（进入试航前调用）。</summary>
+    /// <summary>重置所有方块耐久到形状满值。</summary>
     public void ResetHealth()
     {
         foreach (var block in _blocks)

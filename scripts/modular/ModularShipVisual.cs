@@ -9,7 +9,7 @@ using System.Linq;
 /// 把 ModularShip 的每个方块按其 ShapeSpec 多边形（旋转后）绘制到调用方的画布上，
 /// 包括：填充 + 描边、连接线、推进器喷口、武器炮口、核心高亮、损坏/失连变暗。
 ///
-/// 这是一个纯静态绘图辅助类，不持有节点。供 UniverseView 与 SpaceTest 共用，
+/// 这是一个纯静态绘图辅助类，不持有节点。供宇宙航行视图使用，
 /// 确保「在编辑器里拼出的多边形舰体」与「运行时看到的舰体」完全一致。
 /// </summary>
 public static class ModularShipVisual

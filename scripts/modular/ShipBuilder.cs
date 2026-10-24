@@ -14,7 +14,7 @@ using System.Linq;
 ///   - 左键放置/拖动、右键旋转、Delete 删除、滚轮镜头缩放。
 ///
 /// 这是一个独立的整屏 Node2D，挂在 Main 下作为「模块化造舰」模式。
-/// 它操作的是 ModularShip（任意角度多边形舰体），与原有网格 ModuleGraph 并存。
+/// 它操作的是宇宙航行共享的 ModularShip（任意角度多边形舰体）。
 /// </summary>
 public partial class ShipBuilder : Node2D
 {
@@ -71,6 +71,12 @@ public partial class ShipBuilder : Node2D
         _draggingBlock = null;
         _dragBefore = null;
         _selection = null;
+        _dragGrabOffset = Vector2.Zero;
+        _palettePress = null;
+        _cameraDragging = false;
+        _snapPreview = null;
+        _snapTargetPortWorld = null;
+        _snapTargetBlock = null;
         if (_ship.Blocks.Count > 0)
             _cameraPosition = _ship.CenterOfMass();
         QueueRedraw();
@@ -79,7 +85,7 @@ public partial class ShipBuilder : Node2D
     public override void _Ready()
     {
         _font = CreateUiFont();
-        // 若尚未 seed（例如 Main 已提前 seed 供宇宙/试航共享），则补上参考舰。
+        // 独立打开编辑器时补上参考舰；主场景已提前初始化共享舰体。
         if (_ship.Blocks.Count == 0)
             _ship.SeedReferenceShip();
         _cameraPosition = _ship.CenterOfMass();

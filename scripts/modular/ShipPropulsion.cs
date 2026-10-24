@@ -1,7 +1,7 @@
 using Godot;
 using System.Collections.Generic;
 
-/// <summary>编辑器、宇宙和试航共用的挂点推进。数值单位换算在这里集中设置。</summary>
+/// <summary>模块化舰体的挂点推进。数值单位换算在这里集中设置。</summary>
 public static class ShipPropulsion
 {
     // 原版 thrusterForce 原值保留；换算成当前世界的质量/距离单位。
