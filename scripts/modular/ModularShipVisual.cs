@@ -54,7 +54,7 @@ public static class ModularShipVisual
                 .Select(v => center + v.Rotated(angle))
                 .ToArray();
 
-            var color = new Color(spec.ColorHex).Lerp(new Color("#f0f4f0"), 0.15f);
+            var color = spec.Color.Lerp(new Color("#f0f4f0"), 0.15f);
             if (!block.Enabled || !mainComponent.Contains(block))
                 color = color.Darkened(0.55f);
 

@@ -15,20 +15,36 @@ using System.Linq;
 /// </summary>
 public sealed class ModularShip
 {
-    /// <summary>一个已放置的方块。</summary>
+    /// <summary>一个已放置的方块（照搬逆向 Block：Id + Position + Angle + Shape + Features + Ports + Health）。</summary>
     public sealed class Block
     {
         public int Id { get; init; }
         public required string ShapeId { get; init; }
-        /// <summary>世界位置（连续浮点）。</summary>
+        /// <summary>Reassembly 数字形状 ID（照搬逆向 Block.Id，引用 TheShapes 表）。</summary>
+        public int NumId => Spec.NumId;
+        /// <summary>世界位置（连续浮点，照搬逆向 Position）。</summary>
         public Vector2 Position { get; set; }
-        /// <summary>朝向（弧度）。</summary>
+        /// <summary>朝向（任意弧度，照搬逆向 Angle）。</summary>
         public float Angle { get; set; }
+        /// <summary>是否启用（照搬逆向 Enabled）。</summary>
         public bool Enabled { get; set; } = true;
-        /// <summary>运行时耐久（默认等于形状 Hull，被击中后下降）。</summary>
+        /// <summary>当前生命值（照搬逆向 Health/MaxHealth，被击中后下降）。</summary>
         public float Health { get; set; }
 
         public ShipShapeLibrary.ShapeSpec Spec => ShipShapeLibrary.Get(ShapeId);
+
+        /// <summary>特征标志（照搬逆向 features 位标志）。</summary>
+        public BlockFeatures Features => Spec.Features;
+
+        /// <summary>
+        /// 端口连接状态（照搬逆向 Port.Connected）：每个端口是否已与另一方块的端口对接。
+        /// 一个端口只能连一个方块（PortPair.CanConnect 一对一）。由 ModularShip.RefreshConnections 维护。
+        /// </summary>
+        internal bool[]? PortConnected;
+
+        /// <summary>端口是否已连接（照搬逆向 Port.IsFree = !Connected）。</summary>
+        public bool IsPortConnected(int portIndex)
+            => PortConnected is not null && portIndex >= 0 && portIndex < PortConnected.Length && PortConnected[portIndex];
 
         public Block Clone() => new()
         {
@@ -49,13 +65,14 @@ public sealed class ModularShip
 
     public Block? Core => _blocks.FirstOrDefault(block => block.ShapeId == "core" && block.Enabled);
 
-    /// <summary>添加方块（不自动连接，由编辑器决定位置/朝向）。</summary>
+    /// <summary>添加方块并刷新端口连接状态（放置后自动与重合的空闲端口对接）。</summary>
     public Block AddBlock(string shapeId, Vector2 position, float angle)
     {
         if (!ShipShapeLibrary.Shapes.ContainsKey(shapeId))
             return null!;
         var block = new Block { Id = _nextId++, ShapeId = shapeId, Position = position, Angle = angle };
         _blocks.Add(block);
+        RefreshConnections();
         Changed?.Invoke();
         return block;
     }
@@ -66,8 +83,59 @@ public sealed class ModularShip
             return false;
         if (!_blocks.Remove(block))
             return false;
+        RefreshConnections();
         Changed?.Invoke();
         return true;
+    }
+
+    /// <summary>
+    /// 重算所有方块的端口连接状态（对齐逆向 connectPorts + PortPair.CanConnect 一对一语义）。
+    /// 规则：两方块端口世界位置重合（距离 ≤ 容差）即连接；一个端口只能连一个方块（先匹配先占用）。
+    /// 放置/删除/拖拽后调用，使 IsPortConnected 反映真实连接，而非每次距离推断。
+    /// </summary>
+    public void RefreshConnections(float tolerance = 1.5f)
+    {
+        foreach (var block in _blocks)
+        {
+            var ports = block.Spec.Ports;
+            block.PortConnected = new bool[ports.Count];
+        }
+
+        var enabled = _blocks.Where(b => b.Enabled).ToList();
+        for (var i = 0; i < enabled.Count; i++)
+        {
+            var a = enabled[i];
+            var sa = a.Spec;
+            for (var j = i + 1; j < enabled.Count; j++)
+            {
+                var b = enabled[j];
+                var sb = b.Spec;
+                for (var pa = 0; pa < sa.Ports.Count; pa++)
+                {
+                    if (a.IsPortConnected(pa))
+                        continue;
+                    var wa = a.Position + sa.Ports[pa].LocalPosition.Rotated(a.Angle);
+                    for (var pb = 0; pb < sb.Ports.Count; pb++)
+                    {
+                        if (b.IsPortConnected(pb))
+                            continue;
+                        var wb = b.Position + sb.Ports[pb].LocalPosition.Rotated(b.Angle);
+                        var normalA = sa.Ports[pa].WorldNormal(a.Angle);
+                        var normalB = sb.Ports[pb].WorldNormal(b.Angle);
+                        // Reassembly 端口是有方向的：位置重合还不够，两个节点必须
+                        // 面向彼此，避免背面或交叉端口被误判为结构连接。
+                        if (wa.DistanceSquaredTo(wb) <= tolerance * tolerance &&
+                            sa.Ports[pa].Type == sb.Ports[pb].Type &&
+                            normalA.Dot(normalB) <= -0.94f)
+                        {
+                            a.PortConnected![pa] = true;
+                            b.PortConnected![pb] = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// <summary>深拷贝一份舰体（含方块与运行时耐久）。</summary>
@@ -196,7 +264,10 @@ public sealed class ModularShip
             foreach (var portB in specB.Ports)
             {
                 var posB = b.Position + portB.LocalPosition.Rotated(b.Angle);
-                if (posA.DistanceTo(posB) <= tolerance)
+                var normalA = portA.WorldNormal(a.Angle);
+                var normalB = portB.WorldNormal(b.Angle);
+                if (posA.DistanceTo(posB) <= tolerance &&
+                    portA.Type == portB.Type && normalA.Dot(normalB) <= -0.94f)
                     return true;
             }
         }

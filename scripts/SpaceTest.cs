@@ -225,6 +225,11 @@ public partial class SpaceTest : Node2D
     private void ConfigureTargetWave(int stage)
     {
         _targets.Clear();
+        if (!UniverseGenerator.GenerateEnemyFactions)
+        {
+            _world?.Announce("敌人派系生成已关闭：当前阶段仅测试舰船建造与航行。");
+            return;
+        }
         if (stage <= 1)
         {
             _targets.AddRange(new[]

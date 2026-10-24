@@ -11,7 +11,10 @@ using System.Collections.Generic;
 public static class UniverseGenerator
 {
     /// <summary>扇区边长（世界单位，像素）。</summary>
-    public const float SectorSize = 4000.0f;
+    // 逆向 regions.lua 的 sectorSize=6000。更大的流式扇区也让星球分布更稀疏。
+    public const float SectorSize = 6000.0f;
+    /// <summary>当前阶段不生成敌人派系/敌对舰队。</summary>
+    public static bool GenerateEnemyFactions { get; } = false;
 
     /// <summary>世界坐标 → 扇区坐标（向下取整）。</summary>
     public static Vector2I WorldToSector(Vector2 world)
@@ -82,8 +85,8 @@ public static class UniverseGenerator
         var center = SectorToWorldCenter(sector);
         var half = SectorSize * 0.5f;
 
-        // 扇区内天体数量：1~4 个，按种子变化，避免空旷或过密。
-        var count = 1 + rng.Next(3);
+        // 扇区内天体数量：1~2 个。配合 6000 扇区边长，降低星球拥挤度。
+        var count = 1 + rng.Next(2);
         for (var i = 0; i < count; i++)
         {
             var offset = new Vector2(
@@ -106,7 +109,7 @@ public static class UniverseGenerator
                     GravityStrength = 30000000.0f,  // G·M：距表面500时 a≈120（推力23%，明显拉扯但可控）
                 });
             }
-            else if (roll < 0.55)
+            else if (roll < 0.42)
             {
                 var biome = Biome(rng);
                 bodies.Add(new CelestialBody

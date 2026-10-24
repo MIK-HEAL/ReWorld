@@ -36,7 +36,17 @@ public partial class ShipBuilder : Node2D
     private bool _mirrorMode = false;
 
     private (Vector2 Position, float Angle, bool Valid)? _snapPreview;
+    /// <summary>当前吸附选定的目标端口世界位置（预览高亮用，无吸附时为 null）。</summary>
+    private Vector2? _snapTargetPortWorld;
+    private ModularShip.Block? _snapTargetBlock;
     private Font _font = null!;
+
+    /// <summary>调色板按钮布局缓存（_Input 点击检测用）。每项 = (矩形, shapeId)。</summary>
+    private readonly List<(Rect2 Rect, string ShapeId)> _paletteButtons = new();
+    private const float PaletteX = 8.0f;
+    private const float PaletteWidth = 300.0f;
+    private const float PaletteItemWidth = 132.0f;
+    private const float PaletteItemHeight = 32.0f;
 
     public ModularShip Ship => _ship;
     public string SelectedShapeId => _selectedShapeId;
@@ -67,10 +77,18 @@ public partial class ShipBuilder : Node2D
     private void UpdateHover()
     {
         _mouseWorld = ScreenToWorld(GetViewport().GetMousePosition());
+        _snapTargetPortWorld = null;
+        _snapTargetBlock = null;
         _snapPreview = ComputeSnap(_selectedShapeId, _previewAngle, _mouseWorld);
     }
 
-    /// <summary>计算方块在指定位置的吸附结果（最近的未占用端口）。</summary>
+    /// <summary>
+    /// 计算方块在指定位置/角度的吸附结果。对齐逆向 connectPorts 与 Reassembly 编辑器手感：
+    ///   - 阶段一：按光标距离选定**目标端口**（吸附点稳定，不因旋转跳到别的端口）。
+    ///   - 阶段二：在选定的目标端口上，按「snapAngle 与玩家旋转 _previewAngle 角度差最小」选自身端口对接
+    ///     —— 旋转键 R/Q/滚轮 在该吸附点切换对接朝向，旋转才真正有效。
+    ///   - 端口位置重合即连接（一个端口只能连一个方块，IsPortOccupied 已过滤）。
+    /// </summary>
     private (Vector2 Position, float Angle, bool Valid)? ComputeSnap(string shapeId, float angle, Vector2 worldPos)
     {
         if (!ShipShapeLibrary.Shapes.TryGetValue(shapeId, out var spec))
@@ -80,38 +98,67 @@ public partial class ShipBuilder : Node2D
         if (shapeId == "core" && _ship.Core is null)
             return (worldPos, angle, true);
 
-        // 找最近的、且未被占用的目标端口，距离在吸附阈值内才吸附。
-        // 对齐逆向 connectPorts：尝试「选中方块的每个端口」对「目标方块的每个空闲端口」所有组合，
-        // 取使光标距离最近的一组（玩家不必关心用哪个端口接，算法自动选最佳对接）。
-        (Vector2 Position, float Angle, bool Valid)? best = null;
-        var bestDist = 80.0f; // 吸附阈值（世界单位）。
+        const float snapThreshold = 48.0f; // 吸附阈值（世界单位），收紧避免跨方块乱跳。
+
+        // 阶段一：找离光标最近的目标端口（用每个自身端口候选中最小的光标距离代表该目标端口）。
+        ModularShip.Block? bestTarget = null;
+        ShipShapeLibrary.Port bestTargetPort = default;
+        var bestTargetDist = snapThreshold;
 
         foreach (var target in _ship.Blocks.Where(block => block.Enabled))
         {
-            var targetSpec = target.Spec;
-            foreach (var targetPort in targetSpec.Ports)
+            for (var tpi = 0; tpi < target.Spec.Ports.Count; tpi++)
             {
-                // 该端口是否已被占用（已有一个方块连在此端口）。
-                if (IsPortOccupied(target, targetPort))
+                var targetPort = target.Spec.Ports[tpi];
+                if (IsPortOccupied(target, tpi))
+                    continue;
+                if (!spec.Ports.Any(port => port.Type == targetPort.Type))
                     continue;
 
+                // 该目标端口上，取所有自身端口候选里离光标最近的距离作为该目标端口的代表距离。
+                var portMinDist = float.MaxValue;
                 foreach (var selfPort in spec.Ports)
                 {
-                    var (snapPos, snapAngle) = ModularShip.SnapBlock(
+                    var (snapPos, _) = ModularShip.SnapBlock(
                         selfPort, targetPort, target.Position, target.Angle);
+                    var d = snapPos.DistanceTo(worldPos);
+                    if (d < portMinDist)
+                        portMinDist = d;
+                }
 
-                    // 计算吸附后方块中心的距离（越近越好）。
-                    var centerDist = snapPos.DistanceTo(worldPos);
-                    if (centerDist < bestDist)
-                    {
-                        bestDist = centerDist;
-                        best = (snapPos, snapAngle, true);
-                    }
+                if (portMinDist < bestTargetDist)
+                {
+                    bestTargetDist = portMinDist;
+                    bestTarget = target;
+                    bestTargetPort = targetPort;
                 }
             }
         }
 
-        return best;
+        if (bestTarget is null)
+            return null;
+
+        // 阶段二：在选定目标端口上，按角度差选自身端口（旋转切换对接朝向）。
+        var bestAng = 0.0f;
+        var bestPos = Vector2.Zero;
+        var bestAngleDiff = float.MaxValue;
+        foreach (var selfPort in spec.Ports)
+        {
+            var (snapPos, snapAngle) = ModularShip.SnapBlock(
+                selfPort, bestTargetPort, bestTarget.Position, bestTarget.Angle);
+            var angleDiff = Mathf.Abs(Mathf.Wrap(snapAngle - angle, -Mathf.Pi, Mathf.Pi));
+            if (angleDiff < bestAngleDiff)
+            {
+                bestAngleDiff = angleDiff;
+                bestPos = snapPos;
+                bestAng = snapAngle;
+            }
+        }
+
+        // 记录吸附目标端口供预览高亮。
+        _snapTargetBlock = bestTarget;
+        _snapTargetPortWorld = bestTarget.Position + bestTargetPort.LocalPosition.Rotated(bestTarget.Angle);
+        return (bestPos, bestAng, true);
     }
 
     /// <summary>
@@ -126,13 +173,17 @@ public partial class ShipBuilder : Node2D
 
         foreach (var target in _ship.Blocks.Where(other => other.Id != block.Id && other.Enabled))
         {
-            foreach (var targetPort in target.Spec.Ports)
+            for (var tpi = 0; tpi < target.Spec.Ports.Count; tpi++)
             {
-                if (IsPortOccupied(target, targetPort))
+                if (IsPortOccupied(target, tpi))
                     continue;
+                var targetPort = target.Spec.Ports[tpi];
                 var targetPortWorld = target.Position + targetPort.LocalPosition.Rotated(target.Angle);
                 foreach (var ownPort in block.Spec.Ports)
                 {
+                    if (ownPort.Type != targetPort.Type ||
+                        ownPort.WorldNormal(block.Angle).Dot(targetPort.WorldNormal(target.Angle)) > -0.94f)
+                        continue;
                     // 平移方块，使 ownPort 与目标端口重合（角度保持拖拽时的朝向）。
                     var candidate = targetPortWorld - ownPort.LocalPosition.Rotated(block.Angle);
                     var dist = candidate.DistanceTo(block.Position);
@@ -146,7 +197,10 @@ public partial class ShipBuilder : Node2D
         }
 
         if (bestPos.HasValue)
+        {
             block.Position = bestPos.Value;
+            _ship.RefreshConnections();
+        }
     }
 
     /// <summary>位置关于过 axisPoint 的纵轴（竖直直线）的镜像。</summary>
@@ -169,23 +223,8 @@ public partial class ShipBuilder : Node2D
             DrawLine(new Vector2(core.Position.X, y), new Vector2(core.Position.X, Mathf.Min(y + dash, bottom)), color, 1.2f / _cameraZoom);
     }
 
-    /// <summary>目标方块的目标端口是否已被其他方块占用。</summary>
-    private bool IsPortOccupied(ModularShip.Block target, ShipShapeLibrary.Port targetPort)
-    {
-        var targetPortWorld = target.Position + targetPort.LocalPosition.Rotated(target.Angle);
-        foreach (var other in _ship.Blocks)
-        {
-            if (other.Id == target.Id || !other.Enabled)
-                continue;
-            foreach (var otherPort in other.Spec.Ports)
-            {
-                var otherPortWorld = other.Position + otherPort.LocalPosition.Rotated(other.Angle);
-                if (otherPortWorld.DistanceTo(targetPortWorld) <= 1.5f)
-                    return true;
-            }
-        }
-        return false;
-    }
+    /// <summary>目标方块的指定端口是否已被连接（对齐逆向 Port.Connected 显式状态，不再距离推断）。</summary>
+    private static bool IsPortOccupied(ModularShip.Block target, int portIndex) => target.IsPortConnected(portIndex);
 
     public override void _Input(InputEvent @event)
     {
@@ -199,9 +238,8 @@ public partial class ShipBuilder : Node2D
 
             if (mouse.Pressed && mouse.ButtonIndex is MouseButton.WheelUp or MouseButton.WheelDown)
             {
-                var worldBefore = ScreenToWorld(mouse.Position);
-                _cameraZoom = Mathf.Clamp(_cameraZoom * (mouse.ButtonIndex == MouseButton.WheelUp ? 1.12f : 1.0f / 1.12f), 0.3f, 3.0f);
-                _cameraPosition = worldBefore - (mouse.Position - new Vector2(ViewWidth, ViewHeight) * 0.5f) / _cameraZoom;
+                // 滚轮旋转方块（对齐 Reassembly 编辑器：滚轮=旋转，缩放走 +/- 键）。
+                _previewAngle += (mouse.ButtonIndex == MouseButton.WheelUp ? 1 : -1) * Mathf.DegToRad(15.0f);
                 return;
             }
 
@@ -219,7 +257,11 @@ public partial class ShipBuilder : Node2D
 
             if (mouse.ButtonIndex == MouseButton.Left)
             {
-                // 点击已有方块 → 选中/拖拽。
+                // 先检测：点击是否落在调色板按钮上 → 选中该形状（照搬 Reassembly 鼠标点选）。
+                if (TrySelectShapeFromPalette(mouse.Position))
+                    return;
+
+                // 点击已有方块 → 选中/拖拽（照搬 Reassembly：鼠标直接拖动方块）。
                 var clicked = BlockAt(ScreenToWorld(mouse.Position));
                 if (clicked is not null && clicked.ShapeId != "core")
                 {
@@ -228,7 +270,7 @@ public partial class ShipBuilder : Node2D
                     return;
                 }
 
-                // 放置新方块（对称模式下同时镜像放置）。
+                // 放置新方块（照搬 Reassembly：左键放置，端口重合即连接，对称模式镜像放置）。
                 if (_snapPreview is { Valid: true } snap)
                 {
                     _ship.AddBlock(_selectedShapeId, snap.Position, snap.Angle);
@@ -236,11 +278,25 @@ public partial class ShipBuilder : Node2D
                     {
                         var mirrorPos = MirrorAcrossAxis(snap.Position, core.Position);
                         var mirrorAngle = MirrorAngleAcrossAxis(snap.Angle);
-                        // 镜像点重新计算吸附，保证端口对齐。
                         var mirrorSnap = ComputeSnap(_selectedShapeId, mirrorAngle, mirrorPos);
                         if (mirrorSnap is { Valid: true } ms && ms.Position.DistanceTo(snap.Position) > 1.0f)
                             _ship.AddBlock(_selectedShapeId, ms.Position, ms.Angle);
                     }
+                    return;
+                }
+
+                // 普通方块必须通过端口接入舰体。逆向编辑器的“节点重合即连接”
+                // 是建造约束，避免出现看似放置成功、运行时却断开的漂浮模块。
+                if (_selectedShapeId != "core")
+                    return;
+
+                _ship.AddBlock(_selectedShapeId, _mouseWorld, _previewAngle);
+                if (_mirrorMode && _ship.Core is { } core2)
+                {
+                    var mirrorPos = MirrorAcrossAxis(_mouseWorld, core2.Position);
+                    var mirrorAngle = MirrorAngleAcrossAxis(_previewAngle);
+                    if (mirrorPos.DistanceTo(_mouseWorld) > 1.0f)
+                        _ship.AddBlock(_selectedShapeId, mirrorPos, mirrorAngle);
                 }
                 return;
             }
@@ -286,13 +342,17 @@ public partial class ShipBuilder : Node2D
         if (@event is InputEventKey key && key.Pressed && !key.Echo)
         {
             if (key.Keycode == Key.R)
-                _previewAngle += Mathf.Pi * 0.25f;
+                _previewAngle += Mathf.DegToRad(15.0f);
             else if (key.Keycode == Key.Q)
-                _previewAngle -= Mathf.Pi * 0.25f;
+                _previewAngle -= Mathf.DegToRad(15.0f);
             else if (key.Keycode == Key.Left)
-                _previewAngle -= Mathf.Pi * 0.05f;
+                _previewAngle -= Mathf.DegToRad(1.0f);
             else if (key.Keycode == Key.Right)
-                _previewAngle += Mathf.Pi * 0.05f;
+                _previewAngle += Mathf.DegToRad(1.0f);
+            else if (key.Keycode == Key.Equal || key.Keycode == Key.Plus)
+                _cameraZoom = Mathf.Clamp(_cameraZoom * 1.15f, 0.3f, 3.0f);
+            else if (key.Keycode == Key.Minus)
+                _cameraZoom = Mathf.Clamp(_cameraZoom / 1.15f, 0.3f, 3.0f);
             else if (key.Keycode == Key.F)
             {
                 _cameraPosition = _ship.CenterOfMass();
@@ -302,11 +362,24 @@ public partial class ShipBuilder : Node2D
             {
                 _mirrorMode = !_mirrorMode;
             }
-            else if (TryGetShapeShortcut(key.Keycode, out var index) && index < ShipShapeLibrary.BuildOrder.Length)
+            // 照搬 Reassembly：方块选择用鼠标点击调色板，不用键盘快捷键。
+        }
+    }
+
+    /// <summary>检测鼠标点击是否落在调色板按钮上，若是则选中该形状。</summary>
+    private bool TrySelectShapeFromPalette(Vector2 screenPos)
+    {
+        if (screenPos.X < PaletteX || screenPos.X > PaletteX + PaletteWidth)
+            return false;
+        foreach (var (rect, shapeId) in _paletteButtons)
+        {
+            if (rect.HasPoint(screenPos))
             {
-                _selectedShapeId = ShipShapeLibrary.BuildOrder[index];
+                _selectedShapeId = shapeId;
+                return true;
             }
         }
+        return false;
     }
 
     private ModularShip.Block? BlockAt(Vector2 worldPos)
@@ -317,7 +390,19 @@ public partial class ShipBuilder : Node2D
             var block = _ship.Blocks[i];
             if (!block.Enabled)
                 continue;
-            if (block.Position.DistanceTo(worldPos) <= block.Spec.Radius)
+            var local = (worldPos - block.Position).Rotated(-block.Angle);
+            var vertices = block.Spec.Vertices();
+            var inside = false;
+            for (var edgeIndex = 0; edgeIndex < vertices.Length; edgeIndex++)
+            {
+                var j = (edgeIndex + vertices.Length - 1) % vertices.Length;
+                var a = vertices[edgeIndex];
+                var b = vertices[j];
+                if ((a.Y > local.Y) != (b.Y > local.Y) &&
+                    local.X < (b.X - a.X) * (local.Y - a.Y) / (b.Y - a.Y) + a.X)
+                    inside = !inside;
+            }
+            if (inside)
                 return block;
         }
         return null;
@@ -331,32 +416,6 @@ public partial class ShipBuilder : Node2D
     private Vector2 WorldToScreen(Vector2 world)
     {
         return (world - _cameraPosition) * _cameraZoom + new Vector2(ViewWidth, ViewHeight) * 0.5f;
-    }
-
-    private static bool TryGetShapeShortcut(Key key, out int index)
-    {
-        if (key >= Key.Key1 && key <= Key.Key9)
-        {
-            index = (int)key - (int)Key.Key1;
-            return true;
-        }
-        if (key == Key.Key0)
-        {
-            index = 9;
-            return true;
-        }
-        if (key == Key.A)
-        {
-            index = 10;
-            return true;
-        }
-        if (key == Key.D)
-        {
-            index = 11;
-            return true;
-        }
-        index = -1;
-        return false;
     }
 
     public override void _Draw()
@@ -404,7 +463,7 @@ public partial class ShipBuilder : Node2D
                 .Select(v => block.Position + v.Rotated(block.Angle))
                 .ToArray();
 
-            var color = new Color(spec.ColorHex).Lerp(new Color("#f0f4f0"), 0.15f);
+            var color = spec.Color.Lerp(new Color("#f0f4f0"), 0.15f);
             if (!block.Enabled || !mainComponent.Contains(block))
                 color = color.Darkened(0.55f);
 
@@ -456,10 +515,11 @@ public partial class ShipBuilder : Node2D
         {
             if (!block.Enabled)
                 continue;
-            foreach (var port in block.Spec.Ports)
+            for (var pi = 0; pi < block.Spec.Ports.Count; pi++)
             {
+                var port = block.Spec.Ports[pi];
                 var world = block.Position + port.LocalPosition.Rotated(block.Angle);
-                var occupied = IsPortOccupied(block, port);
+                var occupied = IsPortOccupied(block, pi);
                 DrawCircle(world, 3.0f, occupied ? new Color("#f07c8e", 0.5f) : new Color("#7bb7e8", 0.6f));
             }
         }
@@ -469,6 +529,13 @@ public partial class ShipBuilder : Node2D
     {
         if (_draggingBlock is not null)
             return;
+
+        // 高亮吸附目标端口（对齐 Reassembly：端口吸附时端口发光）。
+        if (_snapTargetPortWorld.HasValue)
+        {
+            DrawCircle(_snapTargetPortWorld.Value, 6.0f, new Color("#65c18c", 0.5f));
+            DrawCircle(_snapTargetPortWorld.Value, 10.0f, new Color("#65c18c", 0.25f), false, 1.5f);
+        }
 
         if (_snapPreview is not { } snap || !ShipShapeLibrary.Shapes.TryGetValue(_selectedShapeId, out var spec))
         {
@@ -521,13 +588,13 @@ public partial class ShipBuilder : Node2D
 
     private void DrawPalette()
     {
-        DrawRect(new Rect2(new Vector2(8, 8), new Vector2(300, ViewHeight - 16)), new Color("#0b151f", 0.92f));
-        DrawRect(new Rect2(new Vector2(8, 8), new Vector2(300, ViewHeight - 16)), new Color("#2d5263"), false, 1.0f);
-        DrawString(_font, new Vector2(20, 32), "方块库", HorizontalAlignment.Left, -1, 16, new Color("#f4f1de"));
+        DrawRect(new Rect2(new Vector2(PaletteX, 8), new Vector2(PaletteWidth, ViewHeight - 16)), new Color("#0b151f", 0.92f));
+        DrawRect(new Rect2(new Vector2(PaletteX, 8), new Vector2(PaletteWidth, ViewHeight - 16)), new Color("#2d5263"), false, 1.0f);
+        DrawString(_font, new Vector2(20, 32), "方块库（点击选择）", HorizontalAlignment.Left, -1, 16, new Color("#f4f1de"));
 
-        // 按类别分组（对齐 Reassembly 的分类方块面板）。
+        // 按类别分组（照搬 Reassembly 的分类方块面板）。
+        _paletteButtons.Clear();
         var y = 46.0f;
-        var index = 0;
         foreach (var group in ShipShapeLibrary.BuildOrder.GroupBy(id => ShipShapeLibrary.Get(id).Category))
         {
             DrawString(_font, new Vector2(20, y + 13), group.Key, HorizontalAlignment.Left, -1, 12, new Color("#56707f"));
@@ -539,21 +606,23 @@ public partial class ShipBuilder : Node2D
                 var spec = ShipShapeLibrary.Get(shapeId);
                 var x = 20 + col * 140;
                 var selected = shapeId == _selectedShapeId;
-                var bg = selected ? new Color("#1d3a52") : new Color("#122334");
-                DrawRect(new Rect2(new Vector2(x, y), new Vector2(132, 32)), bg);
-                DrawRect(new Rect2(new Vector2(x, y), new Vector2(132, 32)), selected ? new Color("#65c18c") : new Color("#2d5263"), false, 1.0f);
+                var rect = new Rect2(new Vector2(x, y), new Vector2(PaletteItemWidth, PaletteItemHeight));
+                _paletteButtons.Add((rect, shapeId));
 
-                // 小形状预览。
-                var preview = spec.Vertices().Select(v => new Vector2(x + 16, y + 16) + v * 0.4f).ToArray();
-                DrawColoredPolygon(preview, new Color(spec.ColorHex));
+                var bg = selected ? new Color("#1d3a52") : new Color("#122334");
+                DrawRect(rect, bg);
+                DrawRect(rect, selected ? new Color("#65c18c") : new Color("#2d5263"), false, 1.0f);
+
+                // 小形状预览（照搬 Reassembly 调色板图标）。
+                var previewCenter = new Vector2(x + 16, y + 16);
+                var preview = spec.Vertices().Select(v => previewCenter + v * 0.4f).ToArray();
+                DrawColoredPolygon(preview, spec.Color);
                 DrawPolyline(preview.Append(preview[0]).ToArray(), new Color("#f0f4f0", 0.6f), 1.0f);
 
-                var shortcut = index < 12 ? GetShortcutLabel(index) + " " : "";
-                DrawString(_font, new Vector2(x + 32, y + 20), $"{shortcut}{spec.Label}", HorizontalAlignment.Left, -1, 11,
+                DrawString(_font, new Vector2(x + 32, y + 20), spec.Label, HorizontalAlignment.Left, -1, 11,
                     selected ? new Color("#f4f1de") : new Color("#9fb3c2"));
 
                 col++;
-                index++;
                 if (col == 2)
                 {
                     col = 0;
@@ -584,20 +653,11 @@ public partial class ShipBuilder : Node2D
         DrawString(_font, new Vector2(320, 20), $"当前：{ShipShapeLibrary.Get(_selectedShapeId).Label}  朝向 {Mathf.RadToDeg(_previewAngle):0}°  对称 {(_mirrorMode ? "开" : "关")}",
             HorizontalAlignment.Left, -1, 14, new Color("#b7c7d4"));
         DrawString(_font, new Vector2(320, 44),
-            "左键放置 · 右键删除 · 拖动移动 · R/Q 旋转(45°) · ←/→ 微调 · X 对称 · 滚轮缩放 · 中键平移 · F 居中",
+            "左键放置/拖动 · 右键删除 · 滚轮/R/Q 旋转 · ←/→ 微调 · X 对称 · +/- 缩放 · 中键平移 · F 居中",
             HorizontalAlignment.Left, -1, 13, new Color("#6e8d9c"));
-        DrawString(_font, new Vector2(320, 66), "端口自动吸附：靠近任意空闲端口，方块即对齐法线连接（任意角度多边形舰体）。",
+        DrawString(_font, new Vector2(320, 66), "鼠标点击左侧方块库选择形状；端口靠近时自动对齐吸附（任意角度多边形舰体）。",
             HorizontalAlignment.Left, -1, 12, new Color("#56707f"));
     }
-
-    private static string GetShortcutLabel(int index) => index switch
-    {
-        < 9 => (index + 1).ToString(),
-        9 => "0",
-        10 => "A",
-        11 => "D",
-        _ => "?",
-    };
 
     private static Font CreateUiFont()
     {
