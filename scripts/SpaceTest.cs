@@ -31,25 +31,18 @@ public partial class SpaceTest : Node2D
         public Vector2 Position;
         public Vector2 Velocity;
         public float Heading;
-        public double Health;
-        public double MaxHealth;
         public required string Name;
         public double FireTimer;
-        public List<EnemyModule> Modules { get; } = new();
-    }
+        /// <summary>敌方舰体（模块化多边形，与玩家舰体同一套规则）。</summary>
+        public ModularShip Ship = new();
 
-    private sealed class EnemyModule
-    {
-        public required string Kind;
-        public Vector2 LocalOffset;
-        public Vector2 Size;
-        public double Health;
-        public double MaxHealth;
-        public bool Enabled = true;
+        public double Health => Ship.Blocks.Where(b => b.Enabled).Sum(b => b.Health);
+        public double MaxHealth => Ship.Blocks.Sum(b => b.Spec.Hull);
     }
 
     private sealed class ThrusterVector
     {
+        public int BlockId;
         public Vector2 LocalOffset;
         public Vector2 LocalForce;
         public float Power;
@@ -209,8 +202,9 @@ public partial class SpaceTest : Node2D
         _activeThrusters = 0;
         _thrusterProfile.Clear();
         _disabledShipModules.Clear();
+        _playerShip?.ResetHealth();
         _weaponProfile = BuildWeaponProfile();
-        var metrics = _world.GetMetrics();
+        var metrics = GetPlayerMetrics();
         _playerMaxShield = metrics.Shield;
         _playerShield = _playerMaxShield;
         _playerMaxHull = Math.Max(20.0, metrics.Hull);
@@ -220,13 +214,7 @@ public partial class SpaceTest : Node2D
         _weaponCooldown = 0.0;
         foreach (var target in _targets)
         {
-            target.Health = 0.0;
-            foreach (var module in target.Modules)
-            {
-                module.Health = module.MaxHealth;
-                module.Enabled = true;
-                target.Health += module.Health;
-            }
+            target.Ship.ResetHealth();
             target.Velocity = Vector2.Zero;
             target.Heading = Mathf.Pi;
             target.FireTimer = 0.8;
@@ -278,38 +266,36 @@ public partial class SpaceTest : Node2D
             Name = name,
             FireTimer = 0.8,
         };
-
-        var modules = tier switch
-        {
-            0 => new[]
-            {
-                new EnemyModule { Kind = "core", LocalOffset = Vector2.Zero, Size = new Vector2(26, 26), MaxHealth = 10, Health = 10 },
-                new EnemyModule { Kind = "thruster", LocalOffset = new Vector2(-30, 0), Size = new Vector2(20, 18), MaxHealth = 5, Health = 5 },
-                new EnemyModule { Kind = "weapon", LocalOffset = new Vector2(28, 0), Size = new Vector2(22, 16), MaxHealth = 5, Health = 5 },
-            },
-            1 => new[]
-            {
-                new EnemyModule { Kind = "core", LocalOffset = Vector2.Zero, Size = new Vector2(30, 30), MaxHealth = 12, Health = 12 },
-                new EnemyModule { Kind = "armor", LocalOffset = new Vector2(-28, 0), Size = new Vector2(24, 26), MaxHealth = 7, Health = 7 },
-                new EnemyModule { Kind = "thruster", LocalOffset = new Vector2(-52, 0), Size = new Vector2(18, 22), MaxHealth = 6, Health = 6 },
-                new EnemyModule { Kind = "weapon", LocalOffset = new Vector2(28, -18), Size = new Vector2(24, 14), MaxHealth = 6, Health = 6 },
-                new EnemyModule { Kind = "weapon", LocalOffset = new Vector2(28, 18), Size = new Vector2(24, 14), MaxHealth = 6, Health = 6 },
-            },
-            _ => new[]
-            {
-                new EnemyModule { Kind = "core", LocalOffset = Vector2.Zero, Size = new Vector2(34, 34), MaxHealth = 16, Health = 16 },
-                new EnemyModule { Kind = "armor", LocalOffset = new Vector2(-32, 0), Size = new Vector2(28, 34), MaxHealth = 9, Health = 9 },
-                new EnemyModule { Kind = "armor", LocalOffset = new Vector2(0, -30), Size = new Vector2(30, 18), MaxHealth = 7, Health = 7 },
-                new EnemyModule { Kind = "armor", LocalOffset = new Vector2(0, 30), Size = new Vector2(30, 18), MaxHealth = 7, Health = 7 },
-                new EnemyModule { Kind = "thruster", LocalOffset = new Vector2(-58, 0), Size = new Vector2(20, 24), MaxHealth = 7, Health = 7 },
-                new EnemyModule { Kind = "weapon", LocalOffset = new Vector2(34, -22), Size = new Vector2(26, 16), MaxHealth = 7, Health = 7 },
-                new EnemyModule { Kind = "weapon", LocalOffset = new Vector2(34, 22), Size = new Vector2(26, 16), MaxHealth = 7, Health = 7 },
-            },
-        };
-        target.Modules.AddRange(modules);
-        target.MaxHealth = target.Modules.Sum(module => module.MaxHealth);
-        target.Health = target.MaxHealth;
+        BuildEnemyShip(target.Ship, tier);
         return target;
+    }
+
+    /// <summary>按 tier 用形状库拼装敌方模块化舰体（与玩家同一套形状/端口规则）。</summary>
+    private static void BuildEnemyShip(ModularShip ship, int tier)
+    {
+        ship.AddBlock("core", Vector2.Zero, 0.0f);
+        switch (tier)
+        {
+            case 0:
+                ship.AddBlock("thruster", new Vector2(-46.0f, 0.0f), Mathf.Pi);
+                ship.AddBlock("laser", new Vector2(44.0f, 0.0f), Mathf.Pi * 0.5f);
+                break;
+            case 1:
+                ship.AddBlock("armor", new Vector2(-42.0f, 0.0f), 0.0f);
+                ship.AddBlock("thruster", new Vector2(-72.0f, 0.0f), Mathf.Pi);
+                ship.AddBlock("laser", new Vector2(42.0f, -26.0f), Mathf.Pi * 0.5f);
+                ship.AddBlock("cannon", new Vector2(42.0f, 26.0f), Mathf.Pi * 0.5f);
+                break;
+            default:
+                ship.AddBlock("armor", new Vector2(-46.0f, 0.0f), 0.0f);
+                ship.AddBlock("armor", new Vector2(0.0f, -42.0f), 0.0f);
+                ship.AddBlock("armor", new Vector2(0.0f, 42.0f), 0.0f);
+                ship.AddBlock("thruster", new Vector2(-80.0f, 0.0f), Mathf.Pi);
+                ship.AddBlock("laser", new Vector2(48.0f, -30.0f), Mathf.Pi * 0.5f);
+                ship.AddBlock("missile", new Vector2(48.0f, 30.0f), Mathf.Pi * 0.5f);
+                break;
+        }
+        ship.ResetHealth();
     }
 
     public void Exit()
@@ -332,7 +318,7 @@ public partial class SpaceTest : Node2D
             return;
         }
 
-        var metrics = _world.GetMetrics();
+        var metrics = GetPlayerMetrics();
         _battleHeat = Math.Max(0.0, _battleHeat - metrics.Cooling * delta);
         var thermalRatio = _battleHeatCapacity > 0.0 ? _battleHeat / _battleHeatCapacity : 0.0;
         var thermalPenalty = thermalRatio <= 1.0 ? 1.0 : Math.Clamp(1.0 - (thermalRatio - 1.0) * 0.8, 0.15, 1.0);
@@ -357,33 +343,27 @@ public partial class SpaceTest : Node2D
                     break;
                 if (target.Health <= 0.0)
                     continue;
-                var hitModule = FindTargetModuleAt(target, projectile.Position);
-                if (hitModule is null)
+                var hitBlock = FindTargetBlockAt(target, projectile.Position);
+                if (hitBlock is null)
                     continue;
 
                 var shotDamage = projectile.Damage > 0.0
                     ? projectile.Damage
                     : metrics.Damage * (0.55 + 0.45 * powerScale);
-                hitModule.Health = Math.Max(0.0, hitModule.Health - shotDamage);
-                hitModule.Enabled = hitModule.Health > 0.0;
-                if (hitModule.Kind == "core" && hitModule.Health <= 0.0)
+                hitBlock.Health = Mathf.Max(0.0f, hitBlock.Health - (float)shotDamage);
+                hitBlock.Enabled = hitBlock.Health > 0.0f;
+                if (hitBlock.ShapeId == "core" && hitBlock.Health <= 0.0f)
                 {
-                    foreach (var module in target.Modules)
+                    foreach (var module in target.Ship.Blocks)
                     {
-                        module.Health = 0.0;
+                        module.Health = 0.0f;
                         module.Enabled = false;
                     }
-                    target.Health = 0.0;
-                }
-                else
-                {
-                    target.Health = target.Modules.Sum(module => module.Health);
                 }
                 removeProjectile = true;
-                if (hitModule.Health <= 0.0)
+                if (hitBlock.Health <= 0.0f)
                 {
-                    var label = EnemyModuleLabel(hitModule.Kind);
-                    _world.Announce($"试航区：{target.Name} 的{label}被击毁。" + (hitModule.Kind == "core" ? "敌舰瘫痪。" : ""));
+                    _world.Announce($"试航区：{target.Name} 的{hitBlock.Spec.Label}被击毁。" + (hitBlock.ShapeId == "core" ? "敌舰瘫痪。" : ""));
                 }
                 if (target.Health <= 0.0)
                 {
@@ -418,8 +398,8 @@ public partial class SpaceTest : Node2D
             target.FireTimer -= delta;
             if (target.FireTimer > 0.0)
                 continue;
-            var weapons = target.Modules.Where(module => module.Kind == "weapon" && module.Health > 0.0).ToArray();
-            if (weapons.Length == 0)
+            var weapons = target.Ship.GetWeaponMounts();
+            if (weapons.Count == 0)
             {
                 target.FireTimer = 0.75;
                 continue;
@@ -427,7 +407,7 @@ public partial class SpaceTest : Node2D
             target.FireTimer = 1.35 + target.Position.X / 1800.0;
             foreach (var weapon in weapons)
             {
-                var mount = TargetModuleWorldCenter(target, weapon);
+                var mount = target.Position + weapon.Offset.Rotated(target.Heading);
                 var direction = (_playerPosition - mount).Normalized();
                 _projectiles.Add(new Projectile
                 {
@@ -443,18 +423,38 @@ public partial class SpaceTest : Node2D
         for (var index = _projectiles.Count - 1; index >= 0; index--)
         {
             var projectile = _projectiles[index];
-            if (projectile.FromPlayer || projectile.Position.DistanceTo(_playerPosition) >= 24.0f)
+            var hitRadius = _playerShip is not null ? _playerShip.BoundingRadius() : 24.0f;
+            if (projectile.FromPlayer || projectile.Position.DistanceTo(_playerPosition) >= hitRadius)
                 continue;
             var incomingDamage = projectile.Damage > 0.0 ? projectile.Damage : 3.5;
             var shieldDamage = Math.Min(_playerShield, incomingDamage);
             _playerShield -= shieldDamage;
             _playerHull = Math.Max(0.0, _playerHull - (incomingDamage - shieldDamage));
-            var damagedModule = FindPlayerModuleAt(projectile.Position);
-            if (damagedModule is not null && damagedModule.Kind != "core" && damagedModule.Enabled)
+            if (_playerShip is not null)
             {
-                _disabledShipModules.Add(damagedModule.Id);
-                _world.Announce($"敌方火力击毁我方{ModuleGraph.Definitions[damagedModule.Kind].Label}，该部件已离线。");
-                _weaponProfile = BuildWeaponProfile();
+                // 模块化舰体：按点-多边形命中，扣方块耐久，归零则离线并触发断裂。
+                var hitBlock = _playerShip.GetBlockAtWorld(projectile.Position, _playerPosition, _playerHeading);
+                if (hitBlock is not null && hitBlock.ShapeId != "core" && hitBlock.Enabled)
+                {
+                    hitBlock.Health = Mathf.Max(0.0f, hitBlock.Health - (float)incomingDamage);
+                    if (hitBlock.Health <= 0.0f)
+                    {
+                        hitBlock.Enabled = false;
+                        _world.Announce($"敌方火力击毁我方{hitBlock.Spec.Label}，该部件已离线。");
+                        _weaponProfile = BuildWeaponProfile();
+                        _thrusterProfile = BuildThrusterProfile();
+                    }
+                }
+            }
+            else
+            {
+                var damagedModule = FindPlayerModuleAt(projectile.Position);
+                if (damagedModule is not null && damagedModule.Kind != "core" && damagedModule.Enabled)
+                {
+                    _disabledShipModules.Add(damagedModule.Id);
+                    _world.Announce($"敌方火力击毁我方{ModuleGraph.Definitions[damagedModule.Kind].Label}，该部件已离线。");
+                    _weaponProfile = BuildWeaponProfile();
+                }
             }
             _projectiles.RemoveAt(index);
             if (_playerHull <= 0.0)
@@ -525,7 +525,7 @@ public partial class SpaceTest : Node2D
             var desiredHeading = toPlayer.Angle();
             var turn = Mathf.Wrap(desiredHeading - target.Heading, -Mathf.Pi, Mathf.Pi);
             target.Heading += Mathf.Clamp(turn, -1.8f * delta, 1.8f * delta);
-            var thrusterCount = target.Modules.Count(module => module.Kind == "thruster" && module.Health > 0.0);
+            var thrusterCount = target.Ship.GetThrusterMounts().Count;
             var speed = thrusterCount == 0 ? 0.0f : Mathf.Clamp(26.0f + thrusterCount * 18.0f, 26.0f, 70.0f);
             var desiredDistance = 360.0f + (target.Name.GetHashCode() & 95);
             var approach = Mathf.Clamp((distance - desiredDistance) / 180.0f, -0.35f, 1.0f);
@@ -568,29 +568,9 @@ public partial class SpaceTest : Node2D
         return (worldPosition - _cameraPosition) * _cameraZoom + new Vector2(ViewWidth, ViewHeight) * 0.5f;
     }
 
-    private EnemyModule? FindTargetModuleAt(Target target, Vector2 worldPosition)
-    {
-        var local = (worldPosition - target.Position).Rotated(-target.Heading);
-        EnemyModule? best = null;
-        var bestDistance = float.MaxValue;
-        foreach (var module in target.Modules)
-        {
-            if (module.Health <= 0.0)
-                continue;
-            var half = module.Size * 0.5f;
-            var delta = local - module.LocalOffset;
-            if (Mathf.Abs(delta.X) > half.X || Mathf.Abs(delta.Y) > half.Y)
-                continue;
-            var distance = delta.LengthSquared();
-            if (distance < bestDistance)
-            {
-                best = module;
-                bestDistance = distance;
-            }
-        }
-
-        return best;
-    }
+    /// <summary>敌方弹丸命中：用舰体整体的位移 + 旋转做点-多边形测试。</summary>
+    private ModularShip.Block? FindTargetBlockAt(Target target, Vector2 worldPosition) =>
+        target.Ship.GetBlockAtWorld(worldPosition, target.Position, target.Heading);
 
     private ModuleInstance? FindPlayerModuleAt(Vector2 worldPosition)
     {
@@ -622,19 +602,7 @@ public partial class SpaceTest : Node2D
         return best;
     }
 
-    private Vector2 TargetModuleWorldCenter(Target target, EnemyModule module) =>
-        target.Position + module.LocalOffset.Rotated(target.Heading);
-
-    private static string EnemyModuleLabel(string kind) => kind switch
-    {
-        "core" => "核心模块",
-        "thruster" => "引擎模块",
-        "weapon" => "武器模块",
-        "armor" => "装甲模块",
-        _ => "模块",
-    };
-
-    private void ApplyShipMotion(ModuleMetrics metrics, float powerScale, float delta)
+    private void ApplyShipMotion(PlayerMetrics metrics, float powerScale, float delta)
     {
         var throttleInput = 0.0f;
         if (Input.IsKeyPressed(Key.W) || Input.IsKeyPressed(Key.Up))
@@ -709,6 +677,12 @@ public partial class SpaceTest : Node2D
 
         _activeThrusters = active.Count;
         _turnCapacity = torqueCapacity;
+
+        // 同步推进器激活度到渲染映射（按方块 Id，供 ModularShipVisual 绘制火焰）。
+        _playerThrusterActivity.Clear();
+        foreach (var thruster in bodyThrusters)
+            if (thruster.BlockId > 0)
+                _playerThrusterActivity[thruster.BlockId] = thruster.Activation;
         if (forceSum.LengthSquared() > 0.0001f && installedThrust > 0.0f)
         {
             _appliedForceDirection = forceSum.Normalized();
@@ -770,6 +744,7 @@ public partial class SpaceTest : Node2D
                 var torque = localOffset.X * localForce.Y - localOffset.Y * localForce.X;
                 profile.Add(new ThrusterVector
                 {
+                    BlockId = mount.BlockId,
                     LocalOffset = localOffset,
                     LocalForce = localForce,
                     Power = mount.Power,
@@ -987,7 +962,7 @@ public partial class SpaceTest : Node2D
 
         if (@event is InputEventMouseButton fireButton && fireButton.Pressed && fireButton.ButtonIndex == MouseButton.Left)
         {
-            var metrics = _world.GetMetrics();
+            var metrics = GetPlayerMetrics();
             if (_phase != CombatPhase.Active || metrics.Damage <= 0.0 || _weaponCooldown > 0.0 || _playerHull <= 0.0)
             {
                 if (_phase == CombatPhase.Active)
@@ -1141,44 +1116,10 @@ public partial class SpaceTest : Node2D
         {
             var alive = target.Health > 0.0;
             var targetColor = alive ? new Color("#f07c8e") : new Color("#344454");
-            foreach (var module in target.Modules)
-            {
-                var center = TargetModuleWorldCenter(target, module);
-                var color = module.Health > 0.0 ? module.Kind switch
-                {
-                    "core" => new Color("#f07c8e"),
-                    "thruster" => new Color("#cf7bff"),
-                    "weapon" => new Color("#f2cc60"),
-                    _ => new Color("#8c9aaa"),
-                } : new Color("#26323e");
-                var half = module.Size * 0.5f;
-                var corners = new[]
-                {
-                    center + new Vector2(-half.X, -half.Y).Rotated(target.Heading),
-                    center + new Vector2(half.X, -half.Y).Rotated(target.Heading),
-                    center + new Vector2(half.X, half.Y).Rotated(target.Heading),
-                    center + new Vector2(-half.X, half.Y).Rotated(target.Heading),
-                };
-                DrawColoredPolygon(corners, color);
-                DrawPolyline(new[] { corners[0], corners[1], corners[2], corners[3], corners[0] }, new Color("#d8e0e7", 0.65f), 1.1f);
-                if (module.Kind == "core" && module.Health > 0.0)
-                    DrawCircle(center, 5.0f, new Color("#fff0b2"));
-                if (module.Kind == "weapon" && module.Health > 0.0)
-                {
-                    var barrel = center + new Vector2(13.0f, 0).Rotated(target.Heading);
-                    DrawLine(center, barrel, new Color("#ffe9a6"), 2.0f);
-                }
-                if (module.Kind == "thruster" && module.Health > 0.0)
-                {
-                    var exhaust = center - new Vector2(12.0f, 0).Rotated(target.Heading);
-                    DrawLine(center, exhaust, new Color("#f2cc60", 0.8f), 2.0f);
-                }
-                if (module.Health <= 0.0)
-                {
-                    DrawLine(corners[0], corners[2], new Color("#f07c8e", 0.75f), 2.0f);
-                    DrawLine(corners[1], corners[3], new Color("#f07c8e", 0.75f), 2.0f);
-                }
-            }
+
+            // 敌方舰体用与玩家一致的模块化多边形渲染。
+            ModularShipVisual.Draw(this, target.Ship, target.Position, target.Heading);
+
             DrawCircle(target.Position, 42.0f, new Color(targetColor, alive ? 0.25f : 0.1f), false, 1.5f);
             if (alive)
             {
@@ -1203,7 +1144,7 @@ public partial class SpaceTest : Node2D
     {
         var angle = _playerHeading;
 
-        // 模块化舰体：直接用可复用渲染器绘制多边形模块。
+        // 模块化舰体：直接用可复用渲染器绘制多边形模块（含推进器火焰/武器炮口）。
         if (_playerShip is not null)
         {
             ModularShipVisual.Draw(this, _playerShip, _playerPosition, angle, drawPorts: false, thrusterActivity: _playerThrusterActivity);
@@ -1211,24 +1152,22 @@ public partial class SpaceTest : Node2D
         else
         {
             DrawShipBody(angle);
-        }
 
-        // Render the actual engine mounts on the hull. The player can see which
-        // engines are behind the center line, which ones are offset for yaw, and
-        // why a blueprint with no forward-facing engine cannot reverse.
-        foreach (var thruster in _thrusterProfile)
-        {
-            var mount = _playerPosition + (thruster.LocalOffset * MountScale).Rotated(angle);
-            var forceDirection = thruster.LocalForce.Rotated(angle);
-            var nozzle = mount + forceDirection * 12.0f;
-            var activity = Mathf.Clamp(thruster.Activation, 0.0f, 1.0f);
-            DrawCircle(mount, 4.0f + activity * 2.0f, new Color(0.81f, 0.48f, 1.0f, 0.45f + activity * 0.45f));
-            DrawLine(mount, nozzle, new Color("#cf7bff", 0.35f + activity * 0.65f), 2.0f);
-            if (activity > 0.01f)
+            // Render the actual engine mounts on the hull (grid blueprint fallback).
+            foreach (var thruster in _thrusterProfile)
             {
-                var exhaust = -forceDirection;
-                var flameLength = 12.0f + activity * 18.0f;
-                DrawLine(mount - forceDirection * 4.0f, mount + exhaust * flameLength, new Color("#f2cc60", 0.45f + activity * 0.5f), 3.0f);
+                var mount = _playerPosition + (thruster.LocalOffset * MountScale).Rotated(angle);
+                var forceDirection = thruster.LocalForce.Rotated(angle);
+                var nozzle = mount + forceDirection * 12.0f;
+                var activity = Mathf.Clamp(thruster.Activation, 0.0f, 1.0f);
+                DrawCircle(mount, 4.0f + activity * 2.0f, new Color(0.81f, 0.48f, 1.0f, 0.45f + activity * 0.45f));
+                DrawLine(mount, nozzle, new Color("#cf7bff", 0.35f + activity * 0.65f), 2.0f);
+                if (activity > 0.01f)
+                {
+                    var exhaust = -forceDirection;
+                    var flameLength = 12.0f + activity * 18.0f;
+                    DrawLine(mount - forceDirection * 4.0f, mount + exhaust * flameLength, new Color("#f2cc60", 0.45f + activity * 0.5f), 3.0f);
+                }
             }
         }
 
@@ -1236,8 +1175,8 @@ public partial class SpaceTest : Node2D
         // travelling sideways after a differential-thrust turn.
         DrawLine(_playerPosition, _playerPosition + new Vector2(42.0f, 0.0f).Rotated(angle), new Color("#f4f1de", 0.55f), 1.5f);
 
-        var metrics = GetPlayerMetrics();
-        if (metrics.Shield > 0.0 && _playerShield > 0.0)
+        var (shield, damage) = GetPlayerShieldDamage();
+        if (shield > 0.0 && _playerShield > 0.0)
             DrawCircle(_playerPosition, 38.0f, new Color("#7bb7e8", 0.45f), false, 2.0f);
         if (_activeThrusters > 0 && _appliedForceDirection.LengthSquared() > 0.0f)
         {
@@ -1250,7 +1189,7 @@ public partial class SpaceTest : Node2D
                 DrawArc(_playerPosition, 45.0f, angle - 0.8f, angle + 0.8f, 14, turnColor, 2.0f);
             }
         }
-        if (metrics.Damage > 0.0)
+        if (damage > 0.0)
         {
             var mousePosition = ScreenToWorld(GetViewport().GetMousePosition());
             foreach (var weapon in _weaponProfile)
@@ -1266,7 +1205,7 @@ public partial class SpaceTest : Node2D
     }
 
     /// <summary>玩家舰体指标：模块化舰体直接派生，旧网格从 WorldState 取。</summary>
-    private (double Shield, double Damage) GetPlayerMetrics()
+    private (double Shield, double Damage) GetPlayerShieldDamage()
     {
         if (_playerShip is not null)
         {

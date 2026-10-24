@@ -177,9 +177,8 @@ public partial class UniverseView : Node2D
         }
     }
 
-    /// <summary>推进器挂点作为活动映射的键（用其偏移量哈希，简化处理）。</summary>
-    private static int KeyFor(ModularShip.ThrusterMount mount) =>
-        (mount.Offset.X * 1000).GetHashCode() ^ (mount.Offset.Y * 1000).GetHashCode();
+    /// <summary>推进器挂点作为活动映射的键（用方块 Id）。</summary>
+    private static int KeyFor(ModularShip.ThrusterMount mount) => mount.BlockId;
 
     /// <summary>
     /// 牛顿引力（对齐 Reassembly 的 kGravityConstant 模型）：
@@ -461,11 +460,11 @@ public partial class UniverseView : Node2D
                 HorizontalAlignment.Left, -1, 12, new Color("#7f93a8"));
         }
 
-        // 引力状态指示。
-        if (_currentGravity > 5.0f)
+        // 引力状态指示（数值对齐实际量级：推力≈520）。
+        if (_currentGravity > 1.0f)
         {
-            var gravityLabel = _currentGravity > 800.0f ? "⚠ 强引力" : (_currentGravity > 150.0f ? "引力作用中" : "弱引力");
-            var gravityColor = _currentGravity > 800.0f ? new Color("#e8a07b") : new Color("#7bb7e8");
+            var gravityLabel = _currentGravity > 400.0f ? "⚠ 强引力（难以逃逸）" : (_currentGravity > 60.0f ? "引力作用中" : "弱引力");
+            var gravityColor = _currentGravity > 400.0f ? new Color("#e8a07b") : new Color("#7bb7e8");
             DrawString(_font, new Vector2(16, 54), $"引力 {_currentGravity:0} m/s² · {gravityLabel}",
                 HorizontalAlignment.Left, -1, 12, gravityColor);
         }

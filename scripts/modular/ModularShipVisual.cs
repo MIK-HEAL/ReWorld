@@ -76,16 +76,15 @@ public static class ModularShipVisual
             }
             else if (spec.IsThruster)
             {
-                // 推进器：喷口方向 + 火焰。
-                var forceDir = spec.ThrustDirection.Rotated(angle);
+                // 推进器：喷口在推力反方向（-ThrustDirection），火焰朝喷口外喷。
+                var thrustDir = spec.ThrustDirection.Rotated(angle);
                 var activity = thrusterActivity is not null && thrusterActivity.TryGetValue(block.Id, out var a) ? a : 0.0f;
-                var nozzle = center + forceDir * spec.Radius * 0.6f;
+                var nozzle = center - thrustDir * spec.Radius * 0.55f;
                 canvas.DrawCircle(nozzle, 3.5f + activity * 1.5f, new Color(0.81f, 0.48f, 1.0f, 0.5f + activity * 0.4f));
                 if (activity > 0.02f)
                 {
-                    var exhaust = -forceDir;
                     var flameLength = spec.Radius * 0.5f + activity * spec.Radius * 0.9f;
-                    canvas.DrawLine(nozzle, nozzle + exhaust * flameLength, new Color("#f2cc60", 0.4f + activity * 0.5f), 3.0f);
+                    canvas.DrawLine(nozzle, nozzle - thrustDir * flameLength, new Color("#f2cc60", 0.4f + activity * 0.5f), 3.0f);
                 }
             }
             else if (spec.IsWeapon)

@@ -78,6 +78,8 @@ public partial class Main : Node2D
         _shipBuilder = new ShipBuilder();
         AddChild(_shipBuilder);
         _shipBuilder.Visible = false;
+        // 确保参考舰在共享给宇宙/试航前已就绪（ShipBuilder 的 _Ready 在子节点 ready 时才执行）。
+        _shipBuilder.Ship.SeedReferenceShip();
 
         // 无限宇宙是默认入口，占据整屏。造舰/工厂/航线通过按键进入。
         _universe = new UniverseView();
@@ -86,6 +88,9 @@ public partial class Main : Node2D
 
         // 把模块化造舰的舰体共享给宇宙探索（运行时以模块多边形显示）。
         _universe.SetShip(_shipBuilder.Ship);
+
+        // 试航也使用同一模块化舰体（运行时局部命中 + 断裂）。
+        _spaceTest.SetShip(_shipBuilder.Ship);
 
         // 启动进入宇宙：隐藏原有建造 UI。
         _builderUi.Visible = false;
@@ -695,16 +700,29 @@ public partial class Main : Node2D
         : _world.MoveShipModule(from, to);
 
 
+    /// <summary>
+    /// 页面切换统一入口：可见性与处理同步开关。
+    /// 隐藏的页面同时禁用 ProcessMode，杜绝隐藏页面继续飞行/响应输入（建造页与飞行页混叠的根源）。
+    /// </summary>
+    private static void SetPage(CanvasItem? node, bool active)
+    {
+        if (node is null)
+            return;
+        node.Visible = active;
+        if (node is Node godotNode)
+            godotNode.ProcessMode = active ? Node.ProcessModeEnum.Inherit : Node.ProcessModeEnum.Disabled;
+    }
+
     /// <summary>进入模块化造舰页（Reassembly 式任意角度多边形舰体）。</summary>
     private void EnterShipBuilder()
     {
         _mode = "modular";
-        if (_builderUi is not null)
-            _builderUi.Visible = false;
-        if (_spaceHud is not null)
-            _spaceHud.Visible = false;
-        if (_shipBuilder is not null)
-            _shipBuilder.Visible = true;
+        SetPage(_universe, false);
+        SetPage(_spaceTest, false);
+        SetPage(_builderUi, false);
+        SetPage(_spaceHud, false);
+        SetPage(_shipBuilder, true);
+        _shipBuilder?.FocusShip();
         _world.Log("进入模块化造舰：用任意角度多边形方块 + 端口吸附，拼出 Reassembly 式舰体。按 Esc 或 M 返回。");
         QueueRedraw();
     }
@@ -719,14 +737,11 @@ public partial class Main : Node2D
     {
         _mode = "builder";
         _buildContext = BuildContext.Route;
-        if (_universe is not null)
-            _universe.Visible = false;
-        if (_shipBuilder is not null)
-            _shipBuilder.Visible = false;
-        if (_builderUi is not null)
-            _builderUi.Visible = true;
-        if (_spaceHud is not null)
-            _spaceHud.Visible = false;
+        SetPage(_universe, false);
+        SetPage(_shipBuilder, false);
+        SetPage(_spaceTest, false);
+        SetPage(_builderUi, true);
+        SetPage(_spaceHud, false);
         QueueRedraw();
         _builderUi?.Refresh();
     }
@@ -735,24 +750,22 @@ public partial class Main : Node2D
     private void EnterUniverse()
     {
         _mode = "universe";
-        if (_shipBuilder is not null)
-            _shipBuilder.Visible = false;
-        if (_builderUi is not null)
-            _builderUi.Visible = false;
-        if (_spaceHud is not null)
-            _spaceHud.Visible = false;
-        if (_universe is not null)
-            _universe.Visible = true;
+        SetPage(_shipBuilder, false);
+        SetPage(_builderUi, false);
+        SetPage(_spaceHud, false);
+        SetPage(_spaceTest, false);
+        SetPage(_universe, true);
         QueueRedraw();
     }
 
     private void EnterSpaceTest()
     {
         _mode = "space";
-        if (_builderUi is not null)
-            _builderUi.Visible = false;
-        if (_spaceHud is not null)
-            _spaceHud.Visible = true;
+        SetPage(_universe, false);
+        SetPage(_shipBuilder, false);
+        SetPage(_builderUi, false);
+        SetPage(_spaceHud, true);
+        SetPage(_spaceTest, true);
         _spaceTest.Enter();
         _spaceHud?.Refresh();
         QueueRedraw();
@@ -762,13 +775,12 @@ public partial class Main : Node2D
     {
         _mode = "builder";
         _spaceTest.Exit();
+        SetPage(_spaceTest, false);
         _buildContext = BuildContext.Route;
         _selectedGrid = null;
         _draggingOrigin = null;
-        if (_builderUi is not null)
-            _builderUi.Visible = true;
-        if (_spaceHud is not null)
-            _spaceHud.Visible = false;
+        SetPage(_builderUi, true);
+        SetPage(_spaceHud, false);
         QueueRedraw();
         _builderUi?.Refresh();
     }

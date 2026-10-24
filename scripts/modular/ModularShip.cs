@@ -91,7 +91,7 @@ public sealed class ModularShip
     }
 
     /// <summary>一个推进器挂点（用于运行时推力/转向计算）。</summary>
-    public readonly record struct ThrusterMount(Vector2 Offset, Vector2 Force, float Power);
+    public readonly record struct ThrusterMount(int BlockId, Vector2 Offset, Vector2 Force, float Power);
 
     /// <summary>一个武器挂点（用于运行时开火）。</summary>
     public readonly record struct WeaponMount(Vector2 Offset, Vector2 Direction, float Damage);
@@ -113,7 +113,7 @@ public sealed class ModularShip
             if (!mainComponent.Contains(block))
                 continue;
             var force = block.Spec.ThrustDirection.Rotated(block.Angle);
-            mounts.Add(new ThrusterMount(block.Position - com, force, block.Spec.Thrust));
+            mounts.Add(new ThrusterMount(block.Id, block.Position - com, force, block.Spec.Thrust));
         }
         return mounts;
     }
@@ -281,6 +281,16 @@ public sealed class ModularShip
                 return block;
         }
         return null;
+    }
+
+    /// <summary>
+    /// 世界坐标命中测试（舰体整体有位移 + 旋转）。
+    /// shipWorldPos 是舰体质心世界位置，heading 是舰体朝向弧度。
+    /// </summary>
+    public Block? GetBlockAtWorld(Vector2 worldPos, Vector2 shipWorldPos, float heading)
+    {
+        var local = CenterOfMass() + (worldPos - shipWorldPos).Rotated(-heading);
+        return GetBlockAt(local);
     }
 
     /// <summary>判断世界坐标是否落在某方块的（旋转后）多边形内。</summary>

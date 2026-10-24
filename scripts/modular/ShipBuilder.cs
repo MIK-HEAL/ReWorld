@@ -41,7 +41,9 @@ public partial class ShipBuilder : Node2D
     public override void _Ready()
     {
         _font = CreateUiFont();
-        _ship.SeedReferenceShip();
+        // 若尚未 seed（例如 Main 已提前 seed 供宇宙/试航共享），则补上参考舰。
+        if (_ship.Blocks.Count == 0)
+            _ship.SeedReferenceShip();
         _cameraPosition = _ship.CenterOfMass();
     }
 
