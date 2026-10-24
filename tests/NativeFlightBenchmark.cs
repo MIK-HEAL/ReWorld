@@ -2,6 +2,7 @@ using Godot;
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Diagnostics;
 
 /// <summary>Run without --headless for real window frame pacing, including the render driver.</summary>
 public partial class NativeFlightBenchmark : Node
@@ -11,6 +12,7 @@ public partial class NativeFlightBenchmark : Node
     private readonly List<double> _samples = new(900);
     private readonly List<double> _cpuSamples = new(900);
     private int _beforeDraws;
+    private long _lastTimestamp;
     public override void _Ready()
     {
         var ship = new ModularShip(); ship.SeedReferenceShip();
@@ -20,11 +22,14 @@ public partial class NativeFlightBenchmark : Node
     }
     public override void _Process(double delta)
     {
+        var timestamp = Stopwatch.GetTimestamp();
+        var wallMs = _lastTimestamp == 0 ? 0 : (timestamp - _lastTimestamp) * 1000.0 / Stopwatch.Frequency;
+        _lastTimestamp = timestamp;
         _frames++;
         if (_frames == 120) _beforeDraws = _view.RetainedDrawCount;
         if (_frames > 120)
         {
-            _samples.Add(delta * 1000);
+            _samples.Add(wallMs);
             _cpuSamples.Add(Performance.GetMonitor(Performance.Monitor.TimeProcess) * 1000);
         }
         if (_frames < 720) return;

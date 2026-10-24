@@ -85,7 +85,9 @@ public sealed class UniverseTraffic
             var acceleration = result.LocalForce.Rotated(v.Heading) / v.Profile.TotalMass;
             ShipFlightController.Integrate(ref v.Position, ref v.Velocity, ref v.Heading, ref v.AngularVelocity,
                 acceleration, result.Torque / v.Profile.MomentOfInertia, dt);
-            foreach (var body in bodies) UniverseNavigation.ResolveSurface(body, v.Radius, ref v.Position, ref v.Velocity);
+            // IReadOnlyList enumeration boxes List<T>.Enumerator; avoid six allocations per tick.
+            for (var b = 0; b < bodies.Count; b++)
+                UniverseNavigation.ResolveSurface(bodies[b], v.Radius, ref v.Position, ref v.Velocity);
         }
     }
 }

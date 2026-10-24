@@ -380,7 +380,7 @@ public partial class UniverseView : Node2D
             cache = BuildBodyVisualCache(body);
             _bodyVisualCache.Add(body.Id, cache);
         }
-        var position = body.Position;
+        var position = Vector2.Zero;
         var color = new Color(body.ColorHex);
 
         switch (body.Kind)
@@ -405,7 +405,8 @@ public partial class UniverseView : Node2D
 
             case UniverseGenerator.CelestialKind.AsteroidField:
                 // 小行星带：散布小多边形。
-                foreach (var rock in cache.AsteroidRocks) canvas.DrawColoredPolygon(rock, new Color("#5a6878", 0.85f));
+                foreach (var rock in cache.AsteroidRocks)
+                    canvas.DrawColoredPolygon(rock, new Color("#5a6878", 0.85f));
                 break;
         }
 
@@ -424,10 +425,9 @@ public partial class UniverseView : Node2D
                 new Color("#b7c7d4", 0.8f));
         }
     }
-
     private void DrawPlanet(Node2D canvas, UniverseGenerator.CelestialBody body)
     {
-        var position = body.Position;
+        var position = Vector2.Zero;
         var radius = body.Radius;
         var color = new Color(body.ColorHex);
         canvas.DrawCircle(position, radius * 1.035f, new Color("#7199b0", 0.07f));
@@ -463,7 +463,7 @@ public partial class UniverseView : Node2D
                 var angle = (float)rng.NextDouble() * Mathf.Tau;
                 var distance = (float)rng.NextDouble() * body.Radius * 0.68f;
                 var patchRadius = body.Radius * (0.06f + (float)rng.NextDouble() * 0.18f);
-                var center = body.Position + Vector2.Right.Rotated(angle) * distance;
+                var center = Vector2.Right.Rotated(angle) * distance;
                 var points = cache.PlanetPatches[i] = new Vector2[12];
                 for (var j = 0; j < points.Length; j++)
                     points[j] = center + Vector2.Right.Rotated(j * Mathf.Tau / points.Length) *
@@ -473,12 +473,12 @@ public partial class UniverseView : Node2D
             for (var i = 0; i <= 64; i++)
             {
                 var a = -Mathf.Pi * 0.5f + i * Mathf.Pi / 64;
-                cache.PlanetShadow[i] = body.Position + new Vector2(Mathf.Cos(a), Mathf.Sin(a)) * body.Radius;
+                cache.PlanetShadow[i] = new Vector2(Mathf.Cos(a), Mathf.Sin(a)) * body.Radius;
             }
             for (var i = 63; i > 0; i--)
             {
                 var a = -Mathf.Pi * 0.5f + i * Mathf.Pi / 64;
-                cache.PlanetShadow[128 - i] = body.Position + new Vector2(Mathf.Cos(a) * 0.18f, Mathf.Sin(a)) * body.Radius;
+                cache.PlanetShadow[128 - i] = new Vector2(Mathf.Cos(a) * 0.18f, Mathf.Sin(a)) * body.Radius;
             }
         }
         else if (body.Kind == UniverseGenerator.CelestialKind.Station)
@@ -500,7 +500,7 @@ public partial class UniverseView : Node2D
             {
                 var angle = (float)(rng.NextDouble() * Mathf.Tau);
                 var dist = (float)(rng.NextDouble() * body.Radius);
-                var rockPos = body.Position + new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * dist;
+                var rockPos = new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * dist;
                 var rockRadius = 4.0f + (float)(rng.NextDouble() * 9.0f);
                 var sides = rng.Next(5, 8);
                 var rock = cache.AsteroidRocks[i] = new Vector2[sides];
@@ -520,7 +520,8 @@ public partial class UniverseView : Node2D
         if (_ship is not null && _ship.Blocks.Count > 0)
         {
             // 真实模块化舰体：按模块多边形渲染（与编辑器一致）。
-            ModularShipVisual.Draw(this, _ship, position, _visualPlayerHeading, drawPorts: false, thrusterActivity: _thrusterActivity);
+            DrawSetTransform(WorldToScreen(position), 0, Vector2.One * _cameraZoom);
+            ModularShipVisual.Draw(this, _ship, Vector2.Zero, _visualPlayerHeading, drawPorts: false, thrusterActivity: _thrusterActivity);
             return;
         }
 

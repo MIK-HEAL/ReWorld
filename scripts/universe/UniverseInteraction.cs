@@ -47,7 +47,7 @@ public partial class UniverseView
         foreach (var body in _visibleBodies)
         {
             if (_retainedBodies.ContainsKey(body.Id)) continue;
-            var visual = new RetainedBodyVisual { Name = "Celestial", Paint = canvas => DrawCelestialBody(canvas, body) };
+            var visual = new RetainedBodyVisual { Name = "Celestial", Position = body.Position, Paint = canvas => DrawCelestialBody(canvas, body) };
             _retainedBodies.Add(body.Id, visual);
             _bodyLayer.AddChild(visual);
         }
@@ -230,7 +230,11 @@ public partial class UniverseView
             var position = v.PreviousPosition.Lerp(v.Position, fraction);
             if (!view.Grow(100).HasPoint(position)) continue;
             if (_cameraZoom > 0.12f)
-                ModularShipVisual.Draw(this, v.Ship, position, Mathf.LerpAngle(v.PreviousHeading, v.Heading, fraction), thrusterActivity: v.Activity);
+            {
+                DrawSetTransform(WorldToScreen(position), 0, Vector2.One * _cameraZoom);
+                ModularShipVisual.Draw(this, v.Ship, Vector2.Zero, Mathf.LerpAngle(v.PreviousHeading, v.Heading, fraction), thrusterActivity: v.Activity);
+            }
+            DrawSetTransform(new Vector2(ViewWidth, ViewHeight) * 0.5f - _cameraPosition * _cameraZoom, 0, Vector2.One * _cameraZoom);
             DrawCircle(position, 65, new Color("#66d9b0", 0.4f), false, 1 / _cameraZoom);
         }
     }
