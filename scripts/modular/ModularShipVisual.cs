@@ -1,7 +1,7 @@
 using Godot;
 using System;
 using System.Collections.Generic;
-using System.Linq;
+using System.Runtime.CompilerServices;
 
 /// <summary>
 /// 模块化舰体的可复用渲染器（以 Reassembly 为准）。
@@ -14,6 +14,56 @@ using System.Linq;
 /// </summary>
 public static class ModularShipVisual
 {
+    private sealed class BlockGeometry
+    {
+        public required ModularShip.Block Block;
+        public required Vector2 Center;
+        public required Vector2[] LocalVertices;
+        public required Vector2[] Vertices;
+        public required Vector2[] Outline;
+        public required Vector2[] Shadow;
+        public required Vector2[] Inset;
+        public required Vector2[] InsetOutline;
+        public readonly Vector2[] Diamond = new Vector2[5];
+        public readonly Vector2[] Flame = new Vector2[3];
+        public readonly Vector2[] FlameCore = new Vector2[3];
+    }
+
+    private sealed class GeometryCache
+    {
+        public ulong Revision;
+        public bool Initialized;
+        public Vector2 Center;
+        public HashSet<ModularShip.Block> MainComponent = new();
+        public List<(ModularShip.Block A, ModularShip.Block B)> Connections = new();
+        public BlockGeometry[] Blocks = Array.Empty<BlockGeometry>();
+
+        public void Refresh(ModularShip ship)
+        {
+            Center = ship.CenterOfMass();
+            MainComponent = new HashSet<ModularShip.Block>(ship.GetMainComponent());
+            Connections = ship.GetConnections();
+            Blocks = new BlockGeometry[ship.Blocks.Count];
+            for (var i = 0; i < Blocks.Length; i++)
+            {
+                var block = ship.Blocks[i];
+                var source = block.Spec.Vertices();
+                var local = new Vector2[source.Length];
+                for (var j = 0; j < source.Length; j++) local[j] = source[j].Rotated(block.Angle);
+                Blocks[i] = new BlockGeometry
+                {
+                    Block = block, Center = block.Position - Center, LocalVertices = local,
+                    Vertices = new Vector2[source.Length], Outline = new Vector2[source.Length + 1],
+                    Shadow = new Vector2[source.Length], Inset = new Vector2[source.Length],
+                    InsetOutline = new Vector2[source.Length + 1],
+                };
+            }
+            Revision = ship.Revision;
+            Initialized = true;
+        }
+    }
+
+    private static readonly ConditionalWeakTable<ModularShip, GeometryCache> Geometry = new();
     /// <summary>绘制整艘舰体到当前 CanvasItem 画布（须已设置好世界变换）。</summary>
     /// <param name="canvas">目标 CanvasItem（用于 Draw* 调用）。</param>
     /// <param name="ship">要绘制的舰体。</param>
@@ -33,57 +83,80 @@ public static class ModularShipVisual
             return;
 
         // 以质心为原点，把每个方块的世界位置 = worldPos + (block.Position - com).Rotated(heading)。
-        var com = ship.CenterOfMass();
-        var mainComponent = ship.GetMainComponent();
+        var geometry = Geometry.GetValue(ship, static _ => new GeometryCache());
+        if (!geometry.Initialized || geometry.Revision != ship.Revision) geometry.Refresh(ship);
+        var com = geometry.Center;
+        var mainComponent = geometry.MainComponent;
 
         // 1. 连接线（端口重合的方块之间）。
-        foreach (var (a, b) in ship.GetConnections())
+        foreach (var (a, b) in geometry.Connections)
         {
             var aWorld = worldPos + (a.Position - com).Rotated(heading);
             var bWorld = worldPos + (b.Position - com).Rotated(heading);
-            canvas.DrawLine(aWorld, bWorld, new Color("#36586a", 0.9f), 3.0f);
+            canvas.DrawLine(aWorld, bWorld, new Color("#122c38", 0.9f), 7.0f);
+            canvas.DrawLine(aWorld, bWorld, new Color("#3c8c99", 0.55f), 1.2f);
         }
 
         // 2. 方块多边形。
-        foreach (var block in ship.Blocks)
+        foreach (var item in geometry.Blocks)
         {
+            var block = item.Block;
             var spec = block.Spec;
-            var center = worldPos + (block.Position - com).Rotated(heading);
+            var center = worldPos + item.Center.Rotated(heading);
             var angle = block.Angle + heading;
-            var vertices = spec.Vertices()
-                .Select(v => center + v.Rotated(angle))
-                .ToArray();
+            var vertices = item.Vertices;
+            for (var i = 0; i < vertices.Length; i++)
+                item.Outline[i] = vertices[i] = center + item.LocalVertices[i].Rotated(heading);
+            item.Outline[^1] = vertices[0];
 
-            var color = spec.Color.Lerp(new Color("#f0f4f0"), 0.15f);
+            var color = spec.Color.Lerp(new Color("#172431"), 0.32f);
             if (!block.Enabled || !mainComponent.Contains(block))
                 color = color.Darkened(0.55f);
 
+            var shadow = item.Shadow;
+            for (var i = 0; i < vertices.Length; i++) shadow[i] = vertices[i] + new Vector2(2, 3);
+            canvas.DrawColoredPolygon(shadow, new Color("#010306", 0.75f));
             canvas.DrawColoredPolygon(vertices, color);
-            canvas.DrawPolyline(vertices.Append(vertices[0]).ToArray(), new Color("#f0f4f0", 0.75f), 1.2f);
+            var inset = item.Inset;
+            for (var i = 0; i < vertices.Length; i++) inset[i] = center + (vertices[i] - center) * 0.78f;
+            canvas.DrawColoredPolygon(inset, color.Lightened(0.12f));
+            canvas.DrawPolyline(item.Outline, new Color("#9bbac1", 0.68f), 1.2f);
+            var insetOutline = item.InsetOutline;
+            inset.CopyTo(insetOutline, 0);
+            insetOutline[^1] = inset[0];
+            canvas.DrawPolyline(insetOutline, new Color("#0b1218", 0.92f), 1.0f);
+
+            var axis = Vector2.Right.Rotated(angle);
+            var cross = axis.Rotated(Mathf.Pi * 0.5f);
+            if (!spec.IsCore && !spec.IsThruster && !spec.IsWeapon)
+            {
+                canvas.DrawLine(center - axis * spec.Radius * 0.24f, center + axis * spec.Radius * 0.24f, new Color("#b0cbd0", 0.35f), 1.0f);
+                canvas.DrawCircle(center + cross * spec.Radius * 0.22f, 1.4f, new Color("#b0cbd0", 0.7f));
+            }
 
             // 核心高亮。
             if (spec.IsCore)
             {
                 var radius = spec.Radius * 0.4f;
-                var diamond = new[]
-                {
-                    center + new Vector2(0, -radius).Rotated(heading),
-                    center + new Vector2(radius, 0).Rotated(heading),
-                    center + new Vector2(0, radius).Rotated(heading),
-                    center + new Vector2(-radius, 0).Rotated(heading),
-                };
-                canvas.DrawPolyline(diamond.Append(diamond[0]).ToArray(), new Color("#fff0b2"), 1.5f);
+                var diamond = item.Diamond;
+                diamond[0] = center + new Vector2(0, -radius).Rotated(heading);
+                diamond[1] = center + new Vector2(radius, 0).Rotated(heading);
+                diamond[2] = center + new Vector2(0, radius).Rotated(heading);
+                diamond[3] = center + new Vector2(-radius, 0).Rotated(heading);
+                diamond[4] = diamond[0];
+                canvas.DrawPolyline(diamond, new Color("#eab66b"), 1.6f);
+                canvas.DrawCircle(center, radius * 0.36f, new Color("#8ce8df", 0.12f));
             }
             else if (spec.IsThruster)
             {
                 var activity = thrusterActivity is not null && thrusterActivity.TryGetValue(block.Id, out var a) ? a : 0.0f;
-                DrawEngine(canvas, spec, center, angle, activity);
+                DrawEngine(canvas, spec, center, angle, activity, item.Flame, item.FlameCore);
             }
             else if (spec.IsWeapon)
             {
                 // 武器：炮口方向。
                 var fireDir = spec.WeaponDirection.Rotated(angle);
-                canvas.DrawLine(center, center + fireDir * spec.Radius, new Color("#ffe9a6", 0.7f), 2.0f);
+                canvas.DrawLine(center, center + fireDir * spec.Radius, new Color("#eab66b", 0.82f), 2.0f);
             }
 
             // 失连方块标记。
@@ -114,6 +187,10 @@ public static class ModularShipVisual
     /// <summary>编辑器与飞行共用喷口几何；宽度取真实的后边，排气沿局部 -X。</summary>
     public static void DrawEngine(CanvasItem canvas, ShipShapeLibrary.ShapeSpec spec,
         Vector2 center, float angle, float activity = 0)
+        => DrawEngine(canvas, spec, center, angle, activity, null, null);
+
+    private static void DrawEngine(CanvasItem canvas, ShipShapeLibrary.ShapeSpec spec,
+        Vector2 center, float angle, float activity, Vector2[]? flame, Vector2[]? flameCore)
     {
         Vector2 At(Vector2 point) => center + point.Rotated(angle);
         var nozzle = spec.ExhaustPosition;
@@ -127,15 +204,15 @@ public static class ModularShipVisual
         canvas.DrawLine(At(mouthBottom), At(throat + Vector2.Down * width * 0.35f), new Color("#75ceac", 0.65f), 1.2f, true);
         if (activity <= 0.01f) return;
         var length = spec.Radius * (0.55f + 1.5f * activity);
-        canvas.DrawColoredPolygon(new[]
-        {
-            At(mouthTop), At(nozzle + Vector2.Left * length), At(mouthBottom),
-        }, new Color("#75ceac", 0.3f + activity * 0.35f));
-        canvas.DrawColoredPolygon(new[]
-        {
-            At(nozzle + Vector2.Up * width * 0.4f),
-            At(nozzle + Vector2.Left * length * 0.65f),
-            At(nozzle + Vector2.Down * width * 0.4f),
-        }, new Color("#d7fff0", 0.8f));
+        flame ??= new Vector2[3];
+        flameCore ??= new Vector2[3];
+        flame[0] = At(mouthTop);
+        flame[1] = At(nozzle + Vector2.Left * length);
+        flame[2] = At(mouthBottom);
+        canvas.DrawColoredPolygon(flame, new Color("#75ceac", 0.3f + activity * 0.35f));
+        flameCore[0] = At(nozzle + Vector2.Up * width * 0.4f);
+        flameCore[1] = At(nozzle + Vector2.Left * length * 0.65f);
+        flameCore[2] = At(nozzle + Vector2.Down * width * 0.4f);
+        canvas.DrawColoredPolygon(flameCore, new Color("#d7fff0", 0.8f));
     }
 }

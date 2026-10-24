@@ -1,21 +1,26 @@
-using Godot;
+﻿using Godot;
 using System;
 using System.Collections.Generic;
 
 /// <summary>
-/// 无限宇宙的程序化生成器（仿 Reassembly 的 SectorStreamer 范式）。
-/// 世界坐标按「扇区（Sector）」划分，每个扇区用其坐标哈希做确定性随机种子，
-/// 纯函数式地生成该扇区内的天体（星球/空间站/小行星带）。
-/// 因此无需存储无限数据：靠近哪个扇区，就即时算出该扇区的内容，且结果稳定可复现。
+/// 先按确定性种子生成完整恒星系，再由扇区裁剪加载。
+/// 行星、空间站、小行星带围绕同一恒星分布；星系之间保留长距离空域。
 /// </summary>
 public static class UniverseGenerator
 {
     /// <summary>扇区边长（世界单位，像素）。</summary>
-    // 逆向 regions.lua 的 sectorSize=6000。更大的流式扇区也让星球分布更稀疏。
-    public const float SectorSize = 6000.0f;
+    public const float SectorSize = 9000.0f;
     public const float PlanetRadiusMin = 640.0f;
     public const float PlanetRadiusMax = 1100.0f;
     public const float StarRadiusMax = 1900.0f;
+    public const float PlanetGravityRadiusMultiplier = 10.0f;
+    public const float StarGravityRadiusMultiplier = 8.0f;
+    public const float MaxGravityRadius = StarRadiusMax * StarGravityRadiusMultiplier;
+    public const float SystemCellSize = 144000.0f;
+    public const float SystemCenterJitter = 12000.0f;
+    public const float SystemRadius = 34000.0f;
+    public const float MinimumInterstellarGap = SystemCellSize - 2 * SystemCenterJitter - 2 * SystemRadius;
+    private static readonly Vector2 HomeSystemCenter = new(-7500, 4500);
     /// <summary>当前阶段不生成敌人派系/敌对舰队。</summary>
     public static bool GenerateEnemyFactions { get; } = false;
 
@@ -50,6 +55,8 @@ public static class UniverseGenerator
     /// <summary>一个天体（星球 / 空间站 / 小行星带）。</summary>
     public sealed class CelestialBody
     {
+        public string SystemId { get; init; } = "";
+        public string SystemName { get; init; } = "";
         /// <summary>稳定的天体标识；后续轨道交互与地表存档共用。</summary>
         public required string Id { get; init; }
         public required Vector2 Position { get; init; }
@@ -82,131 +89,127 @@ public static class UniverseGenerator
         Star,
     }
 
+    public sealed record StarSystem(string Id, string Name, Vector2 Center, IReadOnlyList<CelestialBody> Bodies);
+
+    public static Vector2I WorldToSystemCell(Vector2 position) => new(
+        Mathf.FloorToInt((position.X - HomeSystemCenter.X + SystemCellSize * 0.5f) / SystemCellSize),
+        Mathf.FloorToInt((position.Y - HomeSystemCenter.Y + SystemCellSize * 0.5f) / SystemCellSize));
+
+    public static Vector2 SystemCenter(Vector2I cell)
+    {
+        if (cell == Vector2I.Zero) return HomeSystemCenter;
+        var seed = SectorSeed(cell) ^ 0xa0761d6478bd642fUL;
+        seed = unchecked((seed ^ (seed >> 30)) * 0xbf58476d1ce4e5b9UL);
+        seed = unchecked((seed ^ (seed >> 27)) * 0x94d049bb133111ebUL);
+        seed ^= seed >> 31;
+        var jitter = new Vector2((seed & 0xffff) / 65535.0f * 2 - 1, ((seed >> 32) & 0xffff) / 65535.0f * 2 - 1);
+        return HomeSystemCenter + new Vector2(cell.X, cell.Y) * SystemCellSize + jitter * SystemCenterJitter;
+    }
+
+    public static string SystemName(Vector2I cell) => cell == Vector2I.Zero ? "启明星系" : $"星系 {cell.X},{cell.Y}";
+
+    public static StarSystem GenerateSystem(Vector2I cell)
+    {
+        var seed = SectorSeed(cell);
+        var rng = new Random((int)(seed & 0x7fffffff) ^ (int)(seed >> 32));
+        var center = SystemCenter(cell);
+        var id = $"system:{cell.X}:{cell.Y}";
+        var name = SystemName(cell);
+        var bodies = new List<CelestialBody>(12);
+        var planets = 4 + rng.Next(3);
+        var phase = cell == Vector2I.Zero ? 0 : (float)rng.NextDouble() * Mathf.Tau;
+        // 内到外的轨道带有足够的径向间距；角度由星系种子决定。
+        for (var i = 0; i < planets; i++)
+        {
+            var angle = phase + i * 2.3999632f;
+            var orbit = 12000 + i * 4000;
+            var position = center + Vector2.Right.Rotated(angle) * orbit;
+            var biome = Biome(rng);
+            var radius = PlanetRadiusMin + (float)rng.NextDouble() * (PlanetRadiusMax - PlanetRadiusMin);
+            bodies.Add(new CelestialBody
+            {
+                Id = $"{id}:planet:{i}", SystemId = id, SystemName = name,
+                Position = position, Kind = CelestialKind.Planet,
+                Name = cell == Vector2I.Zero && i == 0 ? "启明星 · 母星" : PlanetName(rng, cell, i),
+                Radius = radius, ColorHex = BiomeColor(biome), Biome = biome,
+                GravityRadius = radius * PlanetGravityRadiusMultiplier,
+                GravityStrength = radius * radius * 100,
+            });
+        }
+        var starRadius = 1400 + (float)rng.NextDouble() * (StarRadiusMax - 1400);
+        bodies.Add(new CelestialBody
+        {
+            Id = $"{id}:star", SystemId = id, SystemName = name,
+            Position = center, Kind = CelestialKind.Star, Name = $"{name} · 恒星",
+            Radius = starRadius, ColorHex = StarColor(rng),
+            GravityRadius = starRadius * StarGravityRadiusMultiplier,
+            GravityStrength = starRadius * starRadius * 120,
+        });
+        for (var i = 0; i < 1 + planets / 4; i++)
+        {
+            var planet = bodies[i * 2];
+            var position = planet.Position + Vector2.Down.Rotated(phase + i) * (planet.Radius + 1400);
+            bodies.Add(new CelestialBody
+            {
+                Id = $"{id}:station:{i}", SystemId = id, SystemName = name,
+                Position = position, Kind = CelestialKind.Station, Name = StationName(rng),
+                Radius = 160, ColorHex = "#7bb7e8",
+                GravityRadius = 0, GravityStrength = 0,
+            });
+        }
+        for (var i = 0; i < 2; i++)
+        {
+            var position = center + Vector2.Right.Rotated(phase + 1.2f + i * 2.4f) * (15500 + i * 9000);
+            var radius = 90 + (float)rng.NextDouble() * 160;
+            if (bodies.Exists(body => body.Position.DistanceTo(position) < body.Radius + radius + 1200)) continue;
+            bodies.Add(new CelestialBody
+            {
+                Id = $"{id}:asteroid:{i}", SystemId = id, SystemName = name,
+                Position = position, Kind = CelestialKind.AsteroidField, Name = $"{name} · 小行星带 {i + 1}",
+                Radius = radius, ColorHex = "#8c9aaa",
+            });
+        }
+        return new StarSystem(id, name, center, bodies);
+    }
+
     /// <summary>
     /// 生成指定扇区内的所有天体。纯函数：相同扇区坐标始终返回相同结果。
     /// </summary>
     public static List<CelestialBody> GenerateSector(Vector2I sector)
     {
-        var seed = SectorSeed(sector);
-        var rng = new Random((int)(seed & 0x7fffffff) ^ (int)(seed >> 32));
-        var bodies = new List<CelestialBody>();
-        var center = SectorToWorldCenter(sector);
-        var half = SectorSize * 0.5f;
-
-        // 扇区内天体数量：1~2 个。配合 6000 扇区边长，降低星球拥挤度。
-        var count = 1 + rng.Next(2);
-        var omitBody = false;
-        for (var i = 0; i < count; i++)
-        {
-            var offset = new Vector2(
-                (float)(rng.NextDouble() * 2.0 - 1.0) * half * 0.85f,
-                (float)(rng.NextDouble() * 2.0 - 1.0) * half * 0.85f);
-            var position = center + offset;
-
-            // 按种子决定天体类型。
-            var roll = rng.NextDouble();
-            // 开局锚点：一颗可回访的母星，不额外增加扇区天体数量。
-            if (sector == Vector2I.Zero && i == 0) roll = 0.2;
-            var id = $"{sector.X}:{sector.Y}:{i}";
-            if (roll < 0.06)
-            {
-                var radius = 1400.0f + (float)rng.NextDouble() * (StarRadiusMax - 1400.0f);
-                position = PlaceBody(position, radius);
-                bodies.Add(new CelestialBody
-                {
-                    Id = id,
-                    Position = position,
-                    Kind = CelestialKind.Star,
-                    Name = $"恒星 {sector.X},{sector.Y}-{i}",
-                    Radius = radius,
-                    ColorHex = StarColor(rng),
-                    GravityRadius = radius * 2.6f,
-                    GravityStrength = radius * radius * 120.0f,
-                });
-            }
-            else if (roll < 0.42)
-            {
-                var biome = Biome(rng);
-                var radius = PlanetRadiusMin + (float)rng.NextDouble() * (PlanetRadiusMax - PlanetRadiusMin);
-                position = PlaceBody(position, radius);
-                bodies.Add(new CelestialBody
-                {
-                    Id = id,
-                    Position = position,
-                    Kind = CelestialKind.Planet,
-                    Name = PlanetName(rng, sector, i),
-                    Radius = radius,
-                    ColorHex = BiomeColor(biome),
-                    Biome = biome,
-                    GravityRadius = radius * 3.0f,
-                    GravityStrength = radius * radius * 100.0f,
-                });
-            }
-            else if (roll < 0.80)
-            {
-                var radius = 30.0f + (float)rng.NextDouble() * 22.0f;
-                position = PlaceBody(position, radius);
-                bodies.Add(new CelestialBody
-                {
-                    Id = id,
-                    Position = position,
-                    Kind = CelestialKind.Station,
-                    Name = StationName(rng),
-                    Radius = radius,
-                    ColorHex = "#7bb7e8",
-                    GravityRadius = 550.0f,
-                    GravityStrength = 600000.0f,  // G·M：距表面200时 a≈15（推力3%，轻微引导）
-                });
-            }
-            else
-            {
-                var radius = 90.0f + (float)rng.NextDouble() * 160.0f;
-                position = PlaceBody(position, radius);
-                bodies.Add(new CelestialBody
-                {
-                    Id = id,
-                    Position = position,
-                    Kind = CelestialKind.AsteroidField,
-                    Name = $"小行星带 {sector.X},{sector.Y}-{i}",
-                    Radius = radius,
-                    ColorHex = "#8c9aaa",
-                });
-            }
-            if (omitBody) bodies.RemoveAt(bodies.Count - 1);
-        }
-
-        return bodies;
-
-        Vector2 PlaceBody(Vector2 preferred, float radius)
-        {
-            // 连邻接扇区也预留空间；不能只放大贴图，让星球互相穿插。
-            var limit = half - radius - 240;
-            Vector2 ClampToSector(Vector2 p) => center + (p - center).Clamp(Vector2.One * -limit, Vector2.One * limit);
-            bool Free(Vector2 p) => bodies.TrueForAll(b => p.DistanceTo(b.Position) >= radius + b.Radius + 360);
-            var candidate = ClampToSector(preferred);
-            if (Free(candidate)) return candidate;
-            // 每扇区至多两个天体；选离已有天体最远的内部角点，确定性且无重试。
-            var bestDistance = -1f;
-            foreach (var direction in new[] { new Vector2(-1, -1), new Vector2(1, -1), new Vector2(-1, 1), Vector2.One })
-            {
-                var corner = center + direction * limit;
-                var distance = bodies[0].Position.DistanceTo(corner);
-                if (distance > bestDistance) { bestDistance = distance; candidate = corner; }
-            }
-            // 极端情况下两颗大恒星无法同时放进扇区，保留原天体、舍弃第二颗。
-            if (!Free(candidate)) omitBody = true;
-            return candidate;
-        }
+        return BodiesInSectors(sector, sector);
     }
 
     /// <summary>获取玩家附近所有扇区的天体（用于相机可视范围与小地图）。</summary>
     public static List<CelestialBody> GetNearbyBodies(Vector2 worldPosition, int sectorRadius = 2)
     {
         var centerSector = WorldToSector(worldPosition);
+        sectorRadius = Math.Max(0, sectorRadius);
+        return BodiesInSectors(centerSector - Vector2I.One * sectorRadius, centerSector + Vector2I.One * sectorRadius);
+    }
+
+    private static List<CelestialBody> BodiesInSectors(Vector2I first, Vector2I last)
+    {
+        var minWorld = new Vector2(first.X, first.Y) * SectorSize;
+        var maxWorld = new Vector2(last.X + 1, last.Y + 1) * SectorSize;
+        var minCell = WorldToSystemCell(minWorld);
+        var maxCell = WorldToSystemCell(maxWorld);
         var bodies = new List<CelestialBody>();
-        for (var dx = -sectorRadius; dx <= sectorRadius; dx++)
-            for (var dy = -sectorRadius; dy <= sectorRadius; dy++)
-                bodies.AddRange(GenerateSector(centerSector + new Vector2I(dx, dy)));
+        // 批量加载只生成每个星系一次，不为每个空扇区重复生成整套天体。
+        for (var x = minCell.X; x <= maxCell.X; x++)
+        for (var y = minCell.Y; y <= maxCell.Y; y++)
+        {
+            var cell = new Vector2I(x, y);
+            var center = SystemCenter(cell);
+            if (center.X + SystemRadius < minWorld.X || center.Y + SystemRadius < minWorld.Y ||
+                center.X - SystemRadius >= maxWorld.X || center.Y - SystemRadius >= maxWorld.Y) continue;
+            foreach (var body in GenerateSystem(cell).Bodies)
+            {
+                var sector = WorldToSector(body.Position);
+                if (sector.X >= first.X && sector.X <= last.X && sector.Y >= first.Y && sector.Y <= last.Y)
+                    bodies.Add(body);
+            }
+        }
         return bodies;
     }
 

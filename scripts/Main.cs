@@ -37,11 +37,14 @@ public partial class Main : Node2D
         }
         else if (key.Keycode == Key.M || (_building && key.Keycode == Key.Escape))
         {
+            if (!_building && _universe.TravelLocksBuilder) { GetViewport().SetInputAsHandled(); return; }
+            _universe.CloseNavigationOverlays();
             // 丢弃未完成的拖动；已完成的编辑保留在同一个舰体中。
             _shipBuilder.FocusShip();
             _building = !_building;
             SetPage(_universe, !_building);
             SetPage(_shipBuilder, _building);
+            if (!_building) _universe.ResumeFlight();
         }
         else return;
         GetViewport().SetInputAsHandled();

@@ -43,6 +43,8 @@ public partial class MainNavigationChecks : Node
             CheckPage(builder, false);
             var shipField = typeof(UniverseView).GetField("_ship", BindingFlags.Instance | BindingFlags.NonPublic)!;
             Check(ReferenceEquals(shipField.GetValue(universe), builder.Ship), "Flight and editor share the same ship");
+            await Press(Key.R);
+            Check(universe.ControlScheme == ShipFlightController.ControlScheme.Cardinal, "R changes flight mode in the universe");
 
             foreach (var key in new[] { Key.Tab, Key.B, Key.Space, Key.Escape })
             {
@@ -54,6 +56,9 @@ public partial class MainNavigationChecks : Node
             await Press(Key.M);
             CheckPage(universe, false);
             CheckPage(builder, true);
+            await Press(Key.R);
+            Check(universe.ControlScheme == ShipFlightController.ControlScheme.Cardinal,
+                "Builder rotation cannot change the hidden universe flight mode");
             var position = universe.PlayerPosition;
             var block = builder.Ship.Blocks.First(b => !b.Spec.IsCore);
             builder.Ship.RemoveBlock(block);
@@ -70,6 +75,7 @@ public partial class MainNavigationChecks : Node
             await Press(Key.Escape);
             CheckPage(universe, true);
             CheckPage(builder, false);
+            Check(universe.ControlScheme == ShipFlightController.ControlScheme.Cardinal, "Flight mode survives M editor round trip");
             await Press(Key.M);
             Check(builder.Ship.Blocks.Count == remaining, "Completed ship edits survive page switches");
             Check(ReferenceEquals(shipField.GetValue(universe), builder.Ship), "Page switches never replace the shared ship");

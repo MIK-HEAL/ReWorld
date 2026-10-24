@@ -96,9 +96,9 @@ public static class ShipShapeLibrary
 
         // —— 兼容旧 API ——
         public string ColorHex => $"#{ColorUint & 0xFFFFFF:X6}";
-        public bool IsCore => Features.HasFlag(BlockFeatures.Command);
-        public bool IsThruster => Features.HasFlag(BlockFeatures.Thruster);
-        public bool IsWeapon => Features.HasFlag(BlockFeatures.Weapon);
+        public bool IsCore => (Features & BlockFeatures.Command) != 0;
+        public bool IsThruster => (Features & BlockFeatures.Thruster) != 0;
+        public bool IsWeapon => (Features & BlockFeatures.Weapon) != 0;
 
         /// <summary>质量（影响引力与惯性）。</summary>
         public float Mass { get; init; } = 5.0f;

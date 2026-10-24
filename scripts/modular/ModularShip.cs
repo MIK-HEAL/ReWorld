@@ -18,16 +18,32 @@ public sealed class ModularShip
     /// <summary>一个已放置的方块（照搬逆向 Block：Id + Position + Angle + Shape + Features + Ports + Health）。</summary>
     public sealed class Block
     {
+        private Vector2 _position;
+        private float _angle;
+        private bool _enabled = true;
+        internal Action? GeometryChanged;
         public int Id { get; init; }
         public required string ShapeId { get; init; }
         /// <summary>Reassembly 数字形状 ID（照搬逆向 Block.Id，引用 TheShapes 表）。</summary>
         public int NumId => Spec.NumId;
         /// <summary>世界位置（连续浮点，照搬逆向 Position）。</summary>
-        public Vector2 Position { get; set; }
+        public Vector2 Position
+        {
+            get => _position;
+            set { if (_position == value) return; _position = value; GeometryChanged?.Invoke(); }
+        }
         /// <summary>朝向（任意弧度，照搬逆向 Angle）。</summary>
-        public float Angle { get; set; }
+        public float Angle
+        {
+            get => _angle;
+            set { if (_angle == value) return; _angle = value; GeometryChanged?.Invoke(); }
+        }
         /// <summary>是否启用（照搬逆向 Enabled）。</summary>
-        public bool Enabled { get; set; } = true;
+        public bool Enabled
+        {
+            get => _enabled;
+            set { if (_enabled == value) return; _enabled = value; GeometryChanged?.Invoke(); }
+        }
         /// <summary>当前生命值（照搬逆向 Health/MaxHealth，被击中后下降）。</summary>
         public float Health { get; set; }
 
@@ -62,6 +78,9 @@ public sealed class ModularShip
 
     public IReadOnlyList<Block> Blocks => _blocks;
     public event Action? Changed;
+    /// <summary>几何与可用执行器发生变化时递增；飞行/绘制缓存共用。</summary>
+    public ulong Revision { get; private set; }
+    private void InvalidateGeometry() => Revision++;
 
     public Block? Core => _blocks.FirstOrDefault(block => block.ShapeId == "core" && block.Enabled);
 
@@ -73,6 +92,8 @@ public sealed class ModularShip
         var block = new Block { Id = _nextId++, ShapeId = shapeId, Position = position, Angle = angle,
             Health = ShipShapeLibrary.Get(shapeId).Hull };
         _blocks.Add(block);
+        block.GeometryChanged = InvalidateGeometry;
+        InvalidateGeometry();
         RefreshConnections();
         Changed?.Invoke();
         return block;
@@ -84,6 +105,8 @@ public sealed class ModularShip
             return false;
         if (!_blocks.Remove(block))
             return false;
+        block.GeometryChanged = null;
+        InvalidateGeometry();
         RefreshConnections();
         Changed?.Invoke();
         return true;
@@ -145,7 +168,11 @@ public sealed class ModularShip
         var copy = new ModularShip();
         copy._nextId = _nextId;
         foreach (var block in _blocks)
-            copy._blocks.Add(block.Clone());
+        {
+            var cloned = block.Clone();
+            cloned.GeometryChanged = copy.InvalidateGeometry;
+            copy._blocks.Add(cloned);
+        }
         copy.RefreshConnections();
         return copy;
     }
@@ -274,8 +301,11 @@ public sealed class ModularShip
     public void Restore(ModularShip source)
     {
         var copies = source._blocks.Select(b => b.Clone()).ToArray();
+        foreach (var block in _blocks) block.GeometryChanged = null;
         _blocks.Clear();
         _blocks.AddRange(copies);
+        foreach (var block in _blocks) block.GeometryChanged = InvalidateGeometry;
+        InvalidateGeometry();
         _nextId = source._nextId;
         RefreshConnections();
         Changed?.Invoke();
@@ -454,23 +484,22 @@ public sealed class ModularShip
     /// <summary>舰体包围盒半径（用于相机/碰撞粗略估算）。</summary>
     public float BoundingRadius()
     {
-        if (_blocks.Count == 0)
-            return 0.0f;
         var center = CenterOfMass();
-        return _blocks.Where(block => block.Enabled)
-            .Max(block => block.Position.DistanceTo(center) + block.Spec.Radius);
+        var radius = 0.0f;
+        foreach (var block in _blocks)
+            if (block.Enabled)
+                radius = Mathf.Max(radius, block.Position.DistanceTo(center) + block.Spec.Radius);
+        return radius;
     }
 
     /// <summary>质心（按质量加权）。</summary>
     public Vector2 CenterOfMass()
     {
-        var enabled = _blocks.Where(block => block.Enabled).ToList();
-        if (enabled.Count == 0)
-            return Vector2.Zero;
         var weighted = Vector2.Zero;
         var totalMass = 0.0f;
-        foreach (var block in enabled)
+        foreach (var block in _blocks)
         {
+            if (!block.Enabled) continue;
             weighted += block.Position * block.Spec.Mass;
             totalMass += block.Spec.Mass;
         }
@@ -480,7 +509,9 @@ public sealed class ModularShip
     /// <summary>重置为默认参考舰：用端口吸附链生成，保证所有连接端口严格对齐。</summary>
     public void SeedReferenceShip()
     {
+        foreach (var block in _blocks) block.GeometryChanged = null;
         _blocks.Clear();
+        InvalidateGeometry();
         _nextId = 1;
         var core = AddBlock("core", Vector2.Zero, 0.0f);
         var stern = AttachTo(core, 5, "hull", 0);
