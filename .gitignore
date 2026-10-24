@@ -12,8 +12,9 @@ tools/
 docs/
 .workbuddy/
 
-# Reassembly 逆向成果（仅本地保留，不入 git）
-# 含商业游戏 (Steam AppID 329130, Anisoptera Games) 的逆向分析与拷贝数据，
-# 出于版权考虑不提交到任何远程仓库。本地副本在 D:/MyProject/hackson/ReWorld/Reassembly/。
+# Reassembly 原始逆向目录仅本地保留，不提交到远程仓库；运行时目录只保留生成后的目录。
+# 原始副本在 D:/MyProject/hackson/ReWorld/Reassembly/，商业游戏源数据不进入仓库。
 Reassembly/
-data/reassembly/
+# 生成的模块目录是运行时资产，必须随项目保留。
+!data/reassembly/
+!data/reassembly/**
