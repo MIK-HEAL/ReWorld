@@ -390,6 +390,6 @@ public partial class UniverseView
             : $"航行控制已恢复    冷却剩余 {Math.Max(0, WarpDrive.CooldownSeconds-_warp.Elapsed):0.0}s";
         DrawString(_font, new Vector2(360,574), status, fontSize: 13, modulate: ReassemblyUi.CyanHighlight);
         DrawString(_font, new Vector2(360,597), telemetry, fontSize: 13, modulate: ReassemblyUi.TextSteel);
-        ReassemblyUi.DrawSegmentedMeter(this, new Vector2(360,610), new Vector2(560,8), _warp.Progress, ReassemblyUi.CyanHighlight, new Color("#091d28"), 28, 2);
+        ReassemblyUi.DrawSegmentedMeter(this, new Vector2(360,610), new Vector2(560,8), _warp.Progress, ReassemblyUi.CyanHighlight, new Color("#163242"), 28, 2);
     }
 }
