@@ -24,7 +24,7 @@ public partial class FactionCombatChecks : Node
     {
         try
         {
-            Catalog(); GroundTruthCatalog(); Technology(); DiplomacyAndWeapons(); DamageAndResources(); Campaign(); DeathRespawnPhysics(); RepairAndRegrow();
+            Catalog(); GroundTruthCatalog(); Technology(); DiplomacyAndWeapons(); DamageAndResources(); Campaign(); StationServices(); DeathRespawnPhysics(); RepairAndRegrow();
             GD.Print($"FACTION_COMBAT_CHECKS_PASS: {_checks} assertions; catalog={ShipShapeLibrary.Shapes.Count}, registrations={ShipShapeLibrary.RegisteredCount}");
             GetTree().Quit();
         }
@@ -176,6 +176,17 @@ public partial class FactionCombatChecks : Node
             && shipAtStation.Velocity.Dot((shipAtStation.Position - station.Position).Normalized()) >= 0,
             "Ships collide with station hulls and cannot pass through them");
 
+        // High-speed ramming must not breach a station — only weapons can. The ramming ship still takes damage.
+        var rammer = Vessel(FactionRelations.Player, new Vector2(30, 0)); rammer.Velocity = Vector2.Left * 400;
+        var stationHull = stationShip.Blocks.Sum(b => b.Health);
+        var ramHull = rammer.Ship.Blocks.Sum(b => b.Health);
+        rammer.Position += rammer.Velocity * (1f / 60);
+        new CombatWorld().Step(1f / 60, new[] { station, rammer }, new FactionRelations());
+        Check(stationShip.Blocks.Sum(b => b.Health) == stationHull,
+            "Stations are immune to ramming damage — only weapons can breach them");
+        Check(rammer.Ship.Blocks.Sum(b => b.Health) < ramHull,
+            "The ship ramming a station still takes collision damage");
+
         var hostile = Vessel(FactionRelations.Red, new Vector2(300, 0));
         var stationRelations = new FactionRelations();
         var stationCombat = new CombatWorld();
@@ -233,6 +244,25 @@ public partial class FactionCombatChecks : Node
         new CombatWorld().Step(1f / 60, new[] { gentle, slowTarget }, new FactionRelations());
         Check(slowTarget.Ship.Blocks.Sum(b => b.Health) == slowHull, "Below-threshold relative speed deals no collision damage");
 
+        // NPC cruise speed tops out near 150; a single-ship brush at that speed stays under the threshold
+        // and must not chip blocks — neutral traffic shouldn't shred itself in routine maneuvering.
+        var cruiser = Vessel(FactionRelations.Player, new Vector2(0, 0)); cruiser.Velocity = Vector2.Right * 150;
+        var npc = Vessel(FactionRelations.League, new Vector2(62, 0));
+        var npcHull = npc.Ship.Blocks.Sum(b => b.Health);
+        new CombatWorld().Step(1f / 60, new[] { cruiser, npc }, new FactionRelations());
+        Check(npc.Ship.Blocks.Sum(b => b.Health) == npcHull,
+            "NPC cruise-speed brushes (relative 150) stay under the collision damage threshold");
+
+        // Collision damage is throttled to one pulse per contact event: after a hit, both bodies enter a
+        // cooldown so sustained contact cannot stack a fresh damage tick every frame (reassembly collision
+        // is rebound-dominant; only violent impacts hurt, and only once per event).
+        var bumper = Vessel(FactionRelations.Player, new Vector2(0, 0)); bumper.Velocity = Vector2.Right * 250;
+        var wall = Vessel(FactionRelations.League, new Vector2(62, 0));
+        var cooldownCombat = new CombatWorld();
+        cooldownCombat.Step(1f / 60, new[] { bumper, wall }, new FactionRelations());
+        Check(bumper.CollisionDamageCooldown > 0 && wall.CollisionDamageCooldown > 0,
+            "A collision damage pulse puts both bodies on cooldown so sustained contact does not stack damage each frame");
+
         var surface = Vessel(FactionRelations.Player, Vector2.Zero);
         var surfaceHull = surface.Ship.Blocks.Sum(b => b.Health);
         new CombatWorld().SurfaceImpact(surface, 200, Vector2.Right);
@@ -266,6 +296,10 @@ public partial class FactionCombatChecks : Node
 
         var respawnView = new UniverseView(); var respawnShip = new ModularShip(); respawnShip.SeedReferenceShip();
         respawnView.SetShip(respawnShip); AddChild(respawnView); respawnView.SetPhysicsProcess(false);
+        // 复活断言要求确定的初始资源/领地，不能受本地真实 campaign 存档影响。
+        respawnView.Progress = new PlayerProgress();
+        // 测试版开局资源是 1,000,000 R；复活断言验证的是「250 R 起步花 100 存 150」的扣费链路。
+        respawnView.Progress.Resources = 250;
         respawnShip.DamageBlock(respawnShip.Core!, 10000);
         Check(respawnView.TryRespawn() && respawnShip.HasLiveCore && respawnView.Progress.Resources == 150
             && respawnView.PlayerVelocity.IsZeroApprox(),
@@ -281,8 +315,8 @@ public partial class FactionCombatChecks : Node
         respawnView.Progress.Collect(UniverseView.RespawnCost);
         Check(respawnView.TryRespawn() && respawnShip.HasLiveCore && respawnView.Progress.Resources == 150,
             "Own outpost remains available when other stations are hostile");
-        var baseField = typeof(UniverseView).GetField("_playerBase", BindingFlags.NonPublic | BindingFlags.Instance)!;
-        var outpost = (CombatVessel)baseField.GetValue(respawnView)!;
+        var basesField = typeof(UniverseView).GetField("_bases", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var outpost = ((List<CombatVessel>)basesField.GetValue(respawnView)!)[0];
         Check(!CombatWorld.Collides(respawnView.PlayerCombat!, outpost)
             && respawnView.PlayerPosition.DistanceTo(new Vector2(respawnView.Progress.BaseX, respawnView.Progress.BaseY)) > outpost.Ship.BoundingRadius(),
             "Outpost respawn is outside the outpost hull");
@@ -298,6 +332,99 @@ public partial class FactionCombatChecks : Node
         Check(respawnView.Traffic.Vessels.Count(v => v.PlayerOwned) == 1, "Revisiting cells never duplicates owned ships");
         respawnView.QueueFree();
     }
+    private void StationServices()
+    {
+        // Station faction ownership is deterministic: the home system stays League, others pick major factions.
+        Check(UniverseGenerator.StationFactionOf(Vector2I.Zero) == FactionRelations.League,
+            "Home stations remain League territory");
+        var majors = UniverseGenerator.MajorStationFactions.ToHashSet();
+        for (var x = -4; x <= 4; x++)
+            for (var y = -4; y <= 4; y++)
+            {
+                if (x == 0 && y == 0) continue;
+                var cell = new Vector2I(x, y);
+                var faction = UniverseGenerator.StationFactionOf(cell);
+                Check(majors.Contains(faction), "Distant stations belong to a major faction");
+                var system = UniverseGenerator.GenerateSystem(cell);
+                Check(system.Bodies.Where(b => b.Kind == UniverseGenerator.CelestialKind.Station)
+                    .All(b => b.FactionId == faction), "Generated stations carry their system faction");
+            }
+        // Traffic actors and guards follow the station's real faction, not a hardcoded one.
+        var traffic = new UniverseTraffic();
+        traffic.Load(new Vector2I(3, 7), Vector2.Zero);
+        var owner = UniverseGenerator.StationFactionOf(new Vector2I(3, 7));
+        Check(traffic.StationActors.Values.All(a => a.FactionId == owner),
+            "Station combat actors carry the owning faction");
+        Check(traffic.Vessels.All(v => v.FactionId == owner || v.FactionId == FactionRelations.Red
+            || v.FactionId == FactionRelations.Crystal || v.FactionId == FactionRelations.League
+            || v.FactionId == FactionRelations.Pirates),
+            "System traffic belongs to the station owner, wandering traders or the pirate garrison");
+
+        // Diplomatic discounts: friendly stations offer 85%, neutral stations 95%.
+        var redSpec = ShipShapeLibrary.BuildOrder.Select(id => ShipShapeLibrary.Get(id)).First();
+        var archive = PlayerProgress.UnlockCost(redSpec);
+        Check(PlayerProgress.StationUnlockCost(redSpec, 85) == archive * 85 / 100,
+            "Friendly stations offer the 85% price");
+        Check(PlayerProgress.StationUnlockCost(redSpec, 95) == archive * 95 / 100 &&
+            PlayerProgress.StationUnlockCost(redSpec) == archive * 95 / 100 &&
+            PlayerProgress.StationUnlockCost(redSpec, 0) == archive * 95 / 100,
+            "Neutral stations (or unspecified/zero discount) use the regular 95% price");
+        var lockedSpec = ShipShapeLibrary.BuildOrder.Select(id => ShipShapeLibrary.Get(id))
+            .First(s => !new PlayerProgress().CanBuild(s.Id));
+        var lockedArchive = PlayerProgress.UnlockCost(lockedSpec);
+        var progress = new PlayerProgress { Resources = lockedArchive };
+        Check(progress.TryStationUnlock(lockedSpec.Id, 85) && progress.Resources == lockedArchive - lockedArchive * 85 / 100,
+            "Station unlock debits the discounted price exactly");
+
+        // Unprovoked kills: neutral victims turn their faction against the player.
+        var assault = new PlayerProgress();
+        Check(assault.RecordKill(FactionRelations.Crystal, hostile: false) &&
+            assault.Diplomacy.Get(FactionRelations.Player, FactionRelations.Crystal) == DiplomaticState.Wanted,
+            "Unprovoked kills make the attacker wanted");
+        Check(assault.Kills.GetValueOrDefault(FactionRelations.Crystal) == 1, "The kill ledger tracks every kill");
+        Check(!assault.RecordKill(FactionRelations.Crystal, hostile: false) &&
+            assault.Diplomacy.Get(FactionRelations.Player, FactionRelations.Crystal) == DiplomaticState.Wanted &&
+            assault.Kills.GetValueOrDefault(FactionRelations.Crystal) == 2,
+            "Repeat unprovoked kills stay wanted without escalating to full war");
+        var atWar = new PlayerProgress();
+        atWar.Diplomacy.Set(FactionRelations.Player, FactionRelations.Crystal, DiplomaticState.War);
+        Check(!atWar.RecordKill(FactionRelations.Crystal) &&
+            atWar.Diplomacy.Get(FactionRelations.Player, FactionRelations.Crystal) == DiplomaticState.War,
+            "Wartime kills do not alter the state");
+
+        // Contracts are issued by the system's station faction and never target the issuer.
+        var cell37 = new Vector2I(3, 7);
+        var issuer = UniverseGenerator.StationFactionOf(cell37);
+        var contracts = MissionCatalog.Generate(cell37);
+        Check(contracts.All(m => m.Issuer == issuer), "Contracts are issued by the station faction");
+        var bounty = contracts.First(m => m.Kind == MissionKind.Bounty);
+        Check(bounty.Faction != issuer && UniverseGenerator.MajorStationFactions.Contains(bounty.Faction),
+            "Bounties target another major faction, never the issuer");
+        Check(ReferenceEquals(MissionCatalog.Generate(cell37), contracts),
+            "The catalog caches per-system contracts for the hot kill path");
+        Check(MissionCatalog.Find(bounty.Id) == bounty, "Contract ids resolve back to their definitions");
+        Check(MissionCatalog.Generate(Vector2I.Zero).All(m => m.Issuer == FactionRelations.League),
+            "Home-system contracts are League paperwork");
+
+        // The kill ledger survives save reload.
+        var path = "res://.godot/station-services-test.json";
+        assault.Save(path);
+        var reloaded = PlayerProgress.Load(path);
+        Check(reloaded.Kills.GetValueOrDefault(FactionRelations.Crystal) == 2 &&
+            reloaded.Diplomacy.Get(FactionRelations.Player, FactionRelations.Crystal) == DiplomaticState.Neutral,
+            "Kill ledger persists; wanted bounty is a temporary status that clears on reload");
+
+        // Ramming a neutral ship to death is a mutual collision, not an unprovoked attack.
+        var victimShip = new ModularShip(); victimShip.AddBlock("core", Vector2.Zero, 0);
+        var ramVictim = new CombatVessel { Name = "victim", Ship = victimShip, FactionId = FactionRelations.Crystal,
+            Position = new Vector2(20, 0), PreviousPosition = new Vector2(20, 0) };
+        var ramPilot = Vessel(FactionRelations.Player, new Vector2(-30, 0)); ramPilot.Velocity = Vector2.Right * 800;
+        ramPilot.Position += ramPilot.Velocity * (1f / 60);
+        new CombatWorld().Step(1f / 60, new[] { ramPilot, ramVictim }, new FactionRelations());
+        Check(!ramVictim.Alive && ramVictim.KilledByCollision,
+            "Ramming a neutral ship to death flags it as a mutual collision, exempt from wanted status");
+    }
+
     private void DeathRespawnPhysics()
     {
         var view = new UniverseView(); var ship = new ModularShip(); ship.SeedReferenceShip();

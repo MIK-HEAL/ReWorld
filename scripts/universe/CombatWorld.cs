@@ -13,6 +13,10 @@ public class CombatVessel
     public bool Mineral;
     /// <summary>Static combat bodies (stations/outposts) block moving ships but do not receive impulse motion.</summary>
     public bool CollisionStatic;
+    /// <summary>Set when the vessel died from ramming (mutual collision damage), so it is not counted as an unprovoked player attack.</summary>
+    public bool KilledByCollision;
+    /// <summary>碰撞伤害冷却：一次碰撞事件触发后进入冷却，持续接触期间不再每帧叠加伤害（reassembly 碰撞以反弹为主）。</summary>
+    public float CollisionDamageCooldown;
     public string DepositId = "";
     public float Energy, Shield;
     /// <summary>本帧累积的表面撞击速度与法向，由物理帧清零并施放为碰撞伤害。</summary>
@@ -284,7 +288,7 @@ public sealed class CombatWorld
         CombatVessel? player = null, bool firing = false, Vector2? aim = null)
     {
         dt = Math.Clamp(dt, 0, 0.1f);
-        ResolveCollisionDamage(actors);
+        ResolveCollisionDamage(actors, dt);
         ResolveCollisions(actors);
         foreach (var beam in Beams) beam.Life -= dt;
         Beams.RemoveAll(b => b.Life <= 0);
@@ -473,8 +477,12 @@ public sealed class CombatWorld
     }
     public const float SurfaceDamageBase = 15f;
     public const float SurfaceDamagePerSpeed = 0.6f;
-    public const float CollisionDamageThreshold = 120f;
+    // NPC 巡航速度上限约 150，对向擦撞相对速度可达 300；阈值提到 200 让普通巡航擦撞不致伤，
+    // 只有真正高速冲撞（玩家加速、被武器打飞撞墙）才触发伤害。
+    public const float CollisionDamageThreshold = 200f;
     public const float CollisionDamagePerSpeed = 0.4f;
+    // 一次碰撞伤害后的冷却：持续接触按事件节流（每 0.35 秒至多一次），而非每帧叠加致死。
+    public const float CollisionDamageInterval = 0.35f;
 
     /// <summary>恒星/行星表面碰撞：碰到就有基础伤害，按撞击速度加成；护盾先吸收。</summary>
     public void SurfaceImpact(CombatVessel actor, float impactSpeed, Vector2 normal)
@@ -485,8 +493,9 @@ public sealed class CombatWorld
         ApplyDamage(actor, ContactBlock(actor, -normal), damage, -normal);
     }
 
-    /// <summary>舰船间高速碰撞：相对速度超过阈值后，对 SAT 检测到的真实接触方块互伤。</summary>
-    private void ResolveCollisionDamage(IReadOnlyList<CombatVessel> actors)
+    /// <summary>舰船间高速碰撞：相对速度超过阈值后，对 SAT 检测到的真实接触方块互伤。
+    /// 一次接触事件触发后进入冷却，持续接触期间不再每帧叠加伤害——reassembly 的碰撞以反弹为主，只有剧烈撞击才伤。</summary>
+    private void ResolveCollisionDamage(IReadOnlyList<CombatVessel> actors, float dt)
     {
         var count = actors.Count;
         while (_geometryPool.Count < count) _geometryPool.Add(new CollisionGeometry());
@@ -495,6 +504,8 @@ public sealed class CombatWorld
         for (var i = 0; i < count; i++)
         {
             var actor = actors[i];
+            // Tick down collision damage cooldown so a fresh contact can hurt again after the interval.
+            if (actor.CollisionDamageCooldown > 0) actor.CollisionDamageCooldown = Math.Max(0, actor.CollisionDamageCooldown - dt);
             if (actor.Alive && !actor.Mineral) RefreshGeometry(_geometryPool[i], actor);
             else _geometryPool[i].Count = 0;
             _displaced[i] = false;
@@ -514,10 +525,27 @@ public sealed class CombatWorld
                 var relative = a.Velocity - b.Velocity;
                 var speed = relative.Length();
                 if (speed <= CollisionDamageThreshold) continue;
+                // One damage pulse per contact event: while either body is still cooling from a prior pulse,
+                // keep resolving physics (rebound) but skip stacking another damage tick this frame.
+                if (a.CollisionDamageCooldown > 0 || b.CollisionDamageCooldown > 0) continue;
                 // Damage the blocks that actually touched, along the contact normal.
                 var damage = (speed - CollisionDamageThreshold) * CollisionDamagePerSpeed;
-                if (blockA is { } hitA) ApplyDamage(a, hitA, damage, normal);
-                if (blockB is { } hitB) ApplyDamage(b, hitB, damage, -normal);
+                // Static structures (stations, outposts) are immune to ramming — only weapons can breach them.
+                // Ramming kills are mutual collisions, not unprovoked attacks, so they must not trigger a wanted status.
+                if (blockA is { } hitA && !a.CollisionStatic)
+                {
+                    var wasAliveA = a.Alive;
+                    ApplyDamage(a, hitA, damage, normal);
+                    if (wasAliveA && !a.Alive) a.KilledByCollision = true;
+                }
+                if (blockB is { } hitB && !b.CollisionStatic)
+                {
+                    var wasAliveB = b.Alive;
+                    ApplyDamage(b, hitB, damage, -normal);
+                    if (wasAliveB && !b.Alive) b.KilledByCollision = true;
+                }
+                a.CollisionDamageCooldown = CollisionDamageInterval;
+                b.CollisionDamageCooldown = CollisionDamageInterval;
             }
         }
     }

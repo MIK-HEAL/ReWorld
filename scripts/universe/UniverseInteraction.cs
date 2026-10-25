@@ -11,6 +11,13 @@ public partial class UniverseView
     private Node2D _bodyLayer = null!;
     private readonly Dictionary<string, RetainedBodyVisual> _retainedBodies = new();
     private UniverseGenerator.CelestialBody? _dockedStation;
+    /// <summary>当前降落的星球；null 表示在轨飞行。</summary>
+    private UniverseGenerator.CelestialBody? _landedBody;
+    /// <summary>降落时记录的表面法线（从星球中心指向舰船）。</summary>
+    private Vector2 _landedNormal = Vector2.Up;
+    /// <summary>地表作业面板（G）开关。</summary>
+    private bool _surfacePanelOpen;
+    private readonly List<(Rect2 Rect, string Action)> _surfaceButtons = new();
     private bool _chartOpen, _showPerformance;
     private Vector2I _chartOrigin, _warpSelection;
     private string _notice = "H 标记最近空间站 · J 打开星系迁跃图";
@@ -24,11 +31,20 @@ public partial class UniverseView
     private float _warpCameraZoom, _warpZoomBlend;
     public WarpDrive Warp => _warp;
     public UniverseTraffic Traffic => _traffic;
-    public bool IsDocked => _dockedStation is not null;
+    public bool IsDocked => _dockedStation is not null || _landedBody is not null;
+    /// <summary>仅指停靠空间站（T 空间站服务的准入条件）。</summary>
+    public bool IsStationDocked => _dockedStation is not null;
+    /// <summary>当前降落的星球（未降落为 null）。</summary>
+    public UniverseGenerator.CelestialBody? LandedBody => _landedBody;
+    public bool SurfacePanelOpen => _surfacePanelOpen;
     public bool ChartOpen => _chartOpen;
     public bool TravelLocksBuilder => _warp.LocksFlight || _ship is { HasLiveCore: false } ||
         _traffic.Vessels.Any(v => v.Alive && Progress.Diplomacy.Hostile(1, v.FactionId) && v.Position.DistanceTo(_playerPosition) < 1500);
-    public void CloseNavigationOverlays() { _chartOpen = false; CloseCampaignOverlays(); }
+    public void CloseNavigationOverlays() { _chartOpen = false; _surfacePanelOpen = false; CloseCampaignOverlays(); }
+    /// <summary>玩家在地表作业面板请求「建造工厂」：主场景订阅后打开模块化工厂建造界面；无人订阅时退回旧的直建流程（测试场景）。</summary>
+    public event Action? FactoryBuildRequested;
+    /// <summary>供工厂建造界面回传结果提示（在降落视图上滚动显示）。</summary>
+    public void SurfaceNotify(string message) => Notify(message);
     public double FrameMedianMs => _median;
     public double FrameP95Ms => _p95;
     public int RetainedDrawCount => _retainedBodies.Values.Sum(v => v.DrawCount);
@@ -124,6 +140,17 @@ public partial class UniverseView
             return true;
         }
         var locked = _warp.LocksFlight;
+        if (_landedBody is { } landed)
+        {
+            // 降落期间舰船贴附在着陆点：位置锁定在表面，机头指向背离星球的方向。
+            _playerPosition = landed.Position + _landedNormal * (landed.Radius + _flightProfile.BoundingRadius * 0.6f + 8);
+            _playerVelocity = Vector2.Zero;
+            _playerAngularVelocity = 0;
+            _playerHeading = _landedNormal.Angle() + Mathf.Pi * 0.5f;
+            ResetFlightPresentation();
+            _thrusterActivity.Clear();
+            return true;
+        }
         if (_dockedStation is { } station)
         {
             _playerPosition = DockingPosition(station, _flightProfile.BoundingRadius);
@@ -161,25 +188,69 @@ public partial class UniverseView
     public bool ToggleDock()
     {
         if (_warp.LocksFlight) return false;
+        if (_landedBody is not null) return TakeOff();
         if (_dockedStation is not null)
         {
             _dockedStation = null;
             Notify("已离站 · 航行控制已恢复");
             return true;
         }
+        // 优先判定星球降落：贴近行星表面即可着陆（恒星除外）。
+        var planet = _visibleBodies
+            .Where(b => b.Kind == UniverseGenerator.CelestialKind.Planet)
+            .MinBy(b => b.SurfaceDistance(_playerPosition));
+        if (planet is { } landable && landable.SurfaceDistance(_playerPosition) <= 420) return TryLand(landable);
         var station = NearestStation();
-        if (station is not null && (Progress.Diplomacy.Hostile(1, FactionRelations.League) ||
-            _traffic.StationActors.TryGetValue(station.Id, out var actor) && !actor.Alive))
-        { Notify("交战或已摧毁的空间站无法停靠"); return false; }
+        if (station is not null)
+        {
+            _traffic.StationActors.TryGetValue(station.Id, out var actor);
+            // 停靠准入按该站实际归属派系判定，而非默认派系。
+            var ownerFaction = actor?.FactionId ?? station.FactionId;
+            if (Progress.Diplomacy.Hostile(FactionRelations.Player, ownerFaction) || actor is not null && !actor!.Alive)
+            { Notify("交战或已摧毁的空间站无法停靠"); return false; }
+        }
         if (station is null || station.SurfaceDistance(_playerPosition) > 700)
-        { Notify("靠近空间站至 700 距离内再按 F · H 标记空间站"); return false; }
+        { Notify("靠近星球 420 内或空间站 700 内再按 F · H 标记空间站"); return false; }
         if (_playerVelocity.Length() > 180) { Notify("停靠需减速至 180 以下"); return false; }
         _dockedStation = _targetBody = station;
         if (_ship is not null)
             foreach (var block in _ship.Blocks) block.Health = block.Spec.Hull;
-        Notify("停靠完成 · 舰体已修复 · F 离站 · M 造舰");
+        Notify($"已停靠{Progress.Diplomacy.Name(station.FactionId)}的{station.Name} · 舰体已修复 · T 空间站服务 · F 离站");
         return true;
     }
+
+    /// <summary>降落到指定行星表面：记录着陆点法线并锁定航行控制。</summary>
+    public bool TryLand(UniverseGenerator.CelestialBody planet)
+    {
+        if (_ship is null || !_ship.HasLiveCore) { Notify("舰船损毁状态无法登陆"); return false; }
+        if (_playerVelocity.Length() > 180) { Notify("着陆需减速至 180 以下"); return false; }
+        var owner = EffectivePlanetFaction(planet);
+        if (Progress.Diplomacy.Hostile(FactionRelations.Player, owner))
+        { Notify($"{Progress.Diplomacy.Name(owner)}的领空拒绝我方着陆"); return false; }
+        _landedBody = planet;
+        _landedNormal = (planet.Position.X == _playerPosition.X && planet.Position.Y == _playerPosition.Y)
+            ? Vector2.Up : (_playerPosition - planet.Position).Normalized();
+        _targetBody = planet;
+        _surfacePanelOpen = false;
+        Notify($"已降落 {planet.Name} · {PlayerProgress.BiomeLabel(planet.Biome)}矿床 · G 地表作业 · F 起飞");
+        return true;
+    }
+
+    /// <summary>从星球表面起飞：沿着陆法线弹出并恢复航行控制。</summary>
+    public bool TakeOff()
+    {
+        if (_landedBody is not { } planet) return false;
+        _landedBody = null;
+        _surfacePanelOpen = false;
+        _playerPosition = planet.Position + _landedNormal * (planet.Radius + _flightProfile.BoundingRadius + 120);
+        _playerVelocity = _landedNormal * 140;
+        _playerAngularVelocity = 0;
+        ResetFlightPresentation();
+        Notify("已起飞 · 航行控制恢复 · 轨道工厂持续产出");
+        return true;
+    }
+    /// <summary>关闭地表作业面板（迁跃/建站等流程入口处调用）。</summary>
+    public void CloseSurfacePanel() => _surfacePanelOpen = false;
     private UniverseGenerator.CelestialBody? NearestStation()
         => UniverseGenerator.GenerateSystem(UniverseGenerator.WorldToSystemCell(_playerPosition)).Bodies
             .Where(b => b.Kind == UniverseGenerator.CelestialKind.Station)
@@ -193,7 +264,7 @@ public partial class UniverseView
         var clear = !_visibleBodies.Any(b => b.HasSurface && b.SurfaceDistance(_playerPosition) < _flightProfile.BoundingRadius + 180);
         if (!poweredDrive || IsDocked || !clear || _warp.State != WarpDrive.Phase.Ready ||
             !WarpDrive.InRange(UniverseGenerator.WorldToSystemCell(_playerPosition), destination))
-        { Notify("迁跃不可用：需接通迁跃引擎、离站、远离地表、选择相邻星系并完成冷却"); return false; }
+        { Notify("迁跃不可用：需接通迁跃引擎、离站、远离地表、选择已连通的相邻星系并完成冷却"); return false; }
         var destinationSystem = UniverseGenerator.GenerateSystem(destination);
         var destinationStation = destinationSystem.Bodies.First(b => b.Kind == UniverseGenerator.CelestialKind.Station);
         var finish = UniverseView.DockingPosition(destinationStation, _flightProfile.BoundingRadius) + Vector2.Right * 500;
@@ -253,9 +324,18 @@ public partial class UniverseView
                 return true;
             }
             if (key.Keycode == Key.F) { ToggleDock(); return true; }
+            if (key.Keycode == Key.G && _landedBody is not null) { _surfacePanelOpen = !_surfacePanelOpen; return true; }
+            if (key.Keycode == Key.Escape && _surfacePanelOpen) { _surfacePanelOpen = false; return true; }
             if (key.Keycode == Key.H) { _targetBody = NearestStation(); Notify("已标记最近的友方空间站"); return true; }
         }
         if (!_warp.LocksFlight && input is InputEventMouseButton { ButtonIndex: MouseButton.WheelUp or MouseButton.WheelDown }) _warpCameraActive = false;
+        if (_surfacePanelOpen && _landedBody is not null)
+        {
+            if (input is InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Left } click)
+                foreach (var (rect, action) in _surfaceButtons)
+                    if (rect.HasPoint(click.Position)) { HandleSurfaceAction(action); break; }
+            return true;
+        }
         if (_chartOpen && input is InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Left } mouse)
         {
             foreach (var offset in ChartOffsets)
@@ -305,25 +385,106 @@ public partial class UniverseView
                     attempts++;
                 }
                 occupiedLabelRects.Add(labelRect);
-                DrawString(_font, labelPos, $"{v.Name} · {FactionRelations.Label(Progress.Diplomacy.Get(1, v.FactionId))}", HorizontalAlignment.Center, 160, 11, FactionColor(v.FactionId));
+                var caption = v.PlayerOwned && _tableOpen ? $"{v.Name} · {v.CommandLabel}"
+                    : $"{v.Name} · {FactionRelations.Label(Progress.Diplomacy.Get(1, v.FactionId))}";
+                DrawString(_font, labelPos, caption, HorizontalAlignment.Center, 160, 11, FactionColor(v.FactionId));
             }
             var map = MiniMapPoint(v.Position);
             if (MiniMapRect.Grow(-4).HasPoint(map)) DrawCircle(map, 2, FactionColor(v.FactionId));
         }
         if (_noticeTime > 0 && !_chartOpen)
             DrawString(_font, new Vector2(330, 94), _notice, HorizontalAlignment.Center, 650, 14, ReassemblyUi.CyanHighlight);
-        if (IsDocked)
+        if (_dockedStation is not null)
         {
             var dockRect = new Rect2(340, 470, 600, 94);
             ReassemblyUi.DrawChamferFrame(this, dockRect, ReassemblyUi.VoidDark, ReassemblyUi.CyanHighlight, 8.0f, true, 1.5f);
             DrawString(_font, new Vector2(366, 504), "空间站服务 // 已停靠 · 维修完成", fontSize: 18, modulate: ReassemblyUi.CyanHighlight);
-            DrawString(_font, new Vector2(366, 536), "[M] 进入造舰厂    [F] 离港", fontSize: 13, modulate: ReassemblyUi.TextSteel);
+            DrawString(_font, new Vector2(366, 536), "[T] 外交 / 商店 / 任务    [M] 进入造舰厂    [F] 离港", fontSize: 13, modulate: ReassemblyUi.TextSteel);
+        }
+        else if (_landedBody is { } landed && !_surfacePanelOpen)
+        {
+            var landRect = new Rect2(340, 470, 600, 94);
+            ReassemblyUi.DrawChamferFrame(this, landRect, ReassemblyUi.VoidDark, ReassemblyUi.CyanHighlight, 8.0f, true, 1.5f);
+            DrawString(_font, new Vector2(366, 504), $"地表作业 // 已登陆 {landed.Name}", fontSize: 18, modulate: ReassemblyUi.CyanHighlight);
+            DrawString(_font, new Vector2(366, 536), "[G] 地表作业面板 · 认领 / 建造工厂    [F] 起飞", fontSize: 13, modulate: ReassemblyUi.TextSteel);
         }
         if (_showPerformance)
             DrawString(_font, new Vector2(340, 120), $"F3 帧时间 P50 {_median:0.0}ms / P95 {_p95:0.0}ms · {Engine.GetFramesPerSecond()} FPS · 静态绘制 {RetainedDrawCount}", fontSize: 13, modulate: Colors.LightGreen);
         if (_warp.State != WarpDrive.Phase.Ready) DrawWarpEffect();
         if (_chartOpen) DrawWarpChart();
         DrawCampaignOverlays();
+        DrawSurfacePanel();
+    }
+
+    /// <summary>地表作业面板：降落星球后的认领 / 工厂建造入口（G 键开关）。</summary>
+    private void DrawSurfacePanel()
+    {
+        if (!_surfacePanelOpen || _landedBody is not { } planet) return;
+        _surfaceButtons.Clear();
+        var rect = new Rect2(300, 150, 680, 330);
+        ReassemblyUi.DrawChamferFrame(this, rect, ReassemblyUi.VoidDark, ReassemblyUi.CyanHighlight, 8, true, 1.2f);
+        var owner = EffectivePlanetFaction(planet);
+        var claimed = owner == FactionRelations.Player;
+        DrawString(_font, new Vector2(330, 190), $"地表作业 // {planet.Name}", fontSize: 20, modulate: ReassemblyUi.CyanHighlight);
+        var ownerText = owner == 0 ? "无主星球" : owner == FactionRelations.Player ? "自治领地" : $"{Progress.Diplomacy.Name(owner)} 领地";
+        DrawString(_font, new Vector2(330, 222), $"资源 {PlayerProgress.BiomeLabel(planet.Biome)}矿床 · 归属 {ownerText} · 势力半径 {(int)planet.TerritoryRadius}", fontSize: 13, modulate: ReassemblyUi.TextSteel);
+        var count = Progress.FactoryCountOf(planet.Id);
+        var (oreRate, alloyRate) = Progress.FactoryResourceRates();
+        var legacyRate = Progress.FactoryIncomeRate();
+        DrawString(_font, new Vector2(330, 252),
+            $"地表工厂 {count}/{PlayerProgress.MaxFactoriesPerPlanet} · 领地产出 碎料 {oreRate * 60f:0.#}/分 · 合金 {alloyRate * 60f:0.#}/分" +
+            (legacyRate > 0 ? $" · 旧式 +{legacyRate * 60f:0.#} R/分" : ""),
+            fontSize: 13, modulate: ReassemblyUi.PhosphorGreen);
+        DrawString(_font, new Vector2(330, 274),
+            $"库存 碎料 {Progress.ResourceStock.GetValueOrDefault("iron"):N0} · 合金 {Progress.ResourceStock.GetValueOrDefault("alloy"):N0} · 停靠空间站可出售换 R（行情波动）",
+            fontSize: 12, modulate: ReassemblyUi.TextSteel);
+
+        var y = 300f;
+        if (owner == 0)
+            AddSurfaceButton(new Rect2(330, y, 240, 44), "claim", "认领星球 400 R", ReassemblyUi.TacticalAmber, true);
+        else
+            DrawString(_font, new Vector2(330, y + 28), claimed ? "星球已在自治领地内" : "他国领地 · 无法认领", fontSize: 13, modulate: ReassemblyUi.TextMuted);
+
+        var buildEnabled = claimed && count < PlayerProgress.MaxFactoriesPerPlanet;
+        var cost = PlayerProgress.FactoryCost(count);
+        AddSurfaceButton(new Rect2(600, y, 240, 44), "build", $"建造工厂 {cost} R+",
+            claimed ? ReassemblyUi.CyanHighlight : ReassemblyUi.TextMuted, buildEnabled);
+        AddSurfaceButton(new Rect2(330, y + 70, 240, 44), "takeoff", "起飞离地", ReassemblyUi.CyanHighlight, true);
+        DrawString(_font, new Vector2(330, 458), "[G] 关闭面板 · 建造进入模块化蓝图 · 产出资源入库存，空间站出售换 R", fontSize: 12, modulate: ReassemblyUi.TextMuted);
+    }
+
+    private void AddSurfaceButton(Rect2 rect, string action, string text, Color tint, bool enabled)
+    {
+        if (enabled) _surfaceButtons.Add((rect, action));
+        ReassemblyUi.DrawChamferFrame(this, rect, enabled ? new Color("#1c4254") : ReassemblyUi.VoidDark, tint, 5, enabled, 1.2f);
+        DrawString(_font, rect.Position + new Vector2(16, 28), text, fontSize: 14, modulate: enabled ? ReassemblyUi.TextWhite : ReassemblyUi.TextMuted);
+    }
+
+    /// <summary>星球地表工厂标记：沿表面分布的自治色菱形，数量随工厂数增长。</summary>
+    private void DrawFactoryMarkers(Rect2 view)
+    {
+        if (Progress.Factories.Count == 0) return;
+        foreach (var body in _visibleBodies)
+        {
+            if (body.Kind != UniverseGenerator.CelestialKind.Planet) continue;
+            var count = Progress.FactoryCountOf(body.Id);
+            if (count == 0 || !view.Grow(body.Radius + 60).HasPoint(body.Position)) continue;
+            var seed = 17;
+            foreach (var c in body.Id) seed = unchecked(seed * 31 + c);
+            var golden = 2.3999632f;
+            for (var i = 0; i < count; i++)
+            {
+                var angle = Mathf.PosMod(seed * 0.0001f, Mathf.Tau) + i * golden;
+                var marker = body.Position + Vector2.Right.Rotated(angle) * (body.Radius + 16);
+                DrawCircle(marker, 13, new Color("#0b131c", 0.85f));
+                var size = 8f;
+                DrawColoredPolygon(new[]
+                {
+                    marker + Vector2.Up * size, marker + Vector2.Right * size,
+                    marker + Vector2.Down * size, marker + Vector2.Left * size,
+                }, new Color("#66d9b0", 0.95f));
+            }
+        }
     }
     private void DrawWarpChart()
     {
@@ -331,35 +492,60 @@ public partial class UniverseView
         var chartRect = new Rect2(180, 110, 920, 510);
         ReassemblyUi.DrawChamferFrame(this, chartRect, ReassemblyUi.VoidDark, ReassemblyUi.PanelBorder, 12.0f, true, 1.2f);
 
-        DrawString(_font, new Vector2(220, 150), "迁跃引擎星区拓扑 // 星系航图", fontSize: 20, modulate: ReassemblyUi.CyanHighlight);
-        DrawString(_font, new Vector2(220, 178), "选择相邻节点 · 方向键/点击选择 · [回车] 充能启程 · [ESC] 退出", fontSize: 12, modulate: ReassemblyUi.TextMuted);
+        DrawString(_font, new Vector2(220, 150), "迁跃引擎星区拓扑 // 星系航道图", fontSize: 20, modulate: ReassemblyUi.CyanHighlight);
+        DrawString(_font, new Vector2(220, 178), "只有已连通的相邻星系可直航 · 方向键/点击选择 · [回车] 充能启程 · [ESC] 退出", fontSize: 12, modulate: ReassemblyUi.TextMuted);
 
+        // 航道连线：仅绘制确定性生成的真实航道（主干 + 支线），不再中心辐射直连。
+        var window = new HashSet<Vector2I>(ChartOffsets.Select(offset => _chartOrigin + offset));
+        foreach (var offset in ChartOffsets)
+        {
+            var cell = _chartOrigin + offset;
+            foreach (var step in new[] { Vector2I.Right, Vector2I.Down })
+            {
+                var neighbor = cell + step;
+                if (!window.Contains(neighbor) || !UniverseGenerator.SystemsLinked(cell, neighbor)) continue;
+                var hot = cell == _warpSelection || neighbor == _warpSelection;
+                DrawLine(ChartPoint(offset), ChartPoint(neighbor - _chartOrigin),
+                    hot ? ReassemblyUi.CyanHighlight : ReassemblyUi.CyanGrid * 1.6f, hot ? 2.0f : 1.2f);
+            }
+        }
         foreach (var offset in ChartOffsets)
         {
             var point = ChartPoint(offset);
             var cell = _chartOrigin + offset;
-            if (offset != Vector2I.Zero) DrawLine(ChartPoint(Vector2I.Zero), point, ReassemblyUi.CyanGrid * 1.5f, 1.2f);
             var selected = cell == _warpSelection;
             var isOrigin = offset == Vector2I.Zero;
+            var linked = isOrigin || UniverseGenerator.SystemsLinked(_chartOrigin, cell);
 
-            var nodeColor = isOrigin ? ReassemblyUi.CyanHighlight : ReassemblyUi.TacticalAmber;
+            var nodeColor = isOrigin ? ReassemblyUi.CyanHighlight
+                : linked ? ReassemblyUi.TacticalAmber : ReassemblyUi.TextMuted * 0.6f;
             DrawCircle(point, selected ? 10 : 6, nodeColor);
             if (selected)
             {
-                DrawArc(point, 18, 0, Mathf.Tau, 24, ReassemblyUi.CyanHighlight, 1.5f);
+                DrawArc(point, 18, 0, Mathf.Tau, 24, linked ? ReassemblyUi.CyanHighlight : ReassemblyUi.TextMuted, 1.5f);
                 DrawArc(point, 24, 0, Mathf.Tau, 32, ReassemblyUi.CyanHighlight * 0.4f, 1.0f);
             }
-            DrawString(_font, point + new Vector2(-65, 34), UniverseGenerator.SystemName(cell), HorizontalAlignment.Center, 130, 11, selected ? ReassemblyUi.TextWhite : ReassemblyUi.TextSteel);
+            DrawString(_font, point + new Vector2(-65, 34), UniverseGenerator.SystemName(cell), HorizontalAlignment.Center, 130, 11,
+                selected ? ReassemblyUi.TextWhite : linked ? ReassemblyUi.TextSteel : ReassemblyUi.TextMuted);
         }
 
         var destination = UniverseGenerator.GenerateSystem(_warpSelection);
+        var destinationLinked = _warpSelection != _chartOrigin && UniverseGenerator.SystemsLinked(_chartOrigin, _warpSelection);
         var detailRect = new Rect2(760, 240, 310, 320);
         ReassemblyUi.DrawChamferFrame(this, detailRect, ReassemblyUi.VoidDark, ReassemblyUi.PanelBorder, 8.0f, false, 1.0f);
 
         DrawString(_font, new Vector2(780, 280), destination.Name, fontSize: 20, modulate: ReassemblyUi.TextWhite);
-        DrawString(_font, new Vector2(780, 316), _warpSelection == _chartOrigin ? "当前位置 // 现驻节点" : "目标星区 // 航程可达", fontSize: 13, modulate: ReassemblyUi.CyanHighlight);
-        DrawString(_font, new Vector2(780, 350), $"{destination.Bodies.Count(b => b.Kind == UniverseGenerator.CelestialKind.Planet)} 颗行星 / 2 座空间站", fontSize: 12, modulate: ReassemblyUi.TextSteel);
-        DrawString(_font, new Vector2(780, 384), "进轨点：高轨道安全区", fontSize: 11, modulate: ReassemblyUi.TextMuted);
+        DrawString(_font, new Vector2(780, 316), _warpSelection == _chartOrigin ? "当前位置 // 现驻节点"
+            : destinationLinked ? "目标星区 // 航道已连通" : "目标星区 // 无直航航道", fontSize: 13,
+            modulate: destinationLinked ? ReassemblyUi.CyanHighlight : ReassemblyUi.TacticalAmber);
+        DrawString(_font, new Vector2(780, 350),
+            $"{destination.Bodies.Count(b => b.Kind == UniverseGenerator.CelestialKind.Planet)} 颗行星 / " +
+            $"{destination.Bodies.Count(b => b.Kind == UniverseGenerator.CelestialKind.Station)} 座空间站", fontSize: 12, modulate: ReassemblyUi.TextSteel);
+        DrawString(_font, new Vector2(780, 384),
+            destination.Bodies.Any(b => b.Kind == UniverseGenerator.CelestialKind.PirateZone)
+                ? "警告：探测到海盗空域活动" : "进轨点：高轨道安全区", fontSize: 11,
+            modulate: destination.Bodies.Any(b => b.Kind == UniverseGenerator.CelestialKind.PirateZone)
+                ? ReassemblyUi.DangerRed : ReassemblyUi.TextMuted);
 
         var btnRect = new Rect2(780, 480, 270, 44);
         ReassemblyUi.DrawChamferFrame(this, btnRect, new Color("#1c4254"), ReassemblyUi.CyanHighlight, 6.0f, true, 1.2f);

@@ -76,7 +76,10 @@ public partial class UniverseTravelChecks : Node
             for (var i = 0; i < 600; i++) fine.Advance(1f/120);
             Check(coarse.Position.DistanceTo(fine.Position) < 3 && Math.Abs(coarse.Speed-fine.Speed) < 1,
                 "Travel distance and acceleration are independent of frame rate");
-            Check(view.Traffic.Stations.Count == 2 && view.Traffic.Vessels.Count == 8, "Two stations and independent faction traffic");
+            var homeStations = UniverseGenerator.GenerateSystem(Vector2I.Zero)
+                .Bodies.Count(b => b.Kind == UniverseGenerator.CelestialKind.Station);
+            Check(view.Traffic.Stations.Count == homeStations && view.Traffic.Vessels.Count == 4 + homeStations * 2,
+                "Stations and independent faction traffic match the generated system");
             Check(view.Traffic.Vessels.All(v => !v.PlayerOwned && !v.Escort), "Player starts alone without faction NPC escorts");
             foreach (var station in view.Traffic.Stations.Values)
             {
@@ -145,7 +148,10 @@ public partial class UniverseTravelChecks : Node
             view.UpdateRenderTransform(0.5f);
             Check(view.RenderPosition.DistanceTo(view.PlayerPosition) < 2, "Smooth arrival preserves interpolation history");
             Check(destination.Bodies.All(b => !b.HasSurface || b.SurfaceDistance(view.PlayerPosition) > ship.BoundingRadius() + 180), "Arrival clears every solid body");
-            Check(view.Traffic.Cell == Vector2I.Right && view.Traffic.Vessels.Count == 8, "Traffic reloads without accumulating fleets");
+            var expectedVessels = 4 + destination.Bodies.Count(b => b.Kind == UniverseGenerator.CelestialKind.Station) * 2
+                + destination.Bodies.Count(b => b.Kind == UniverseGenerator.CelestialKind.PirateZone) * 4;
+            Check(view.Traffic.Cell == Vector2I.Right && view.Traffic.Vessels.Count == expectedVessels,
+                "Traffic reloads without accumulating fleets");
             var arrival = view.PlayerPosition;
             view._PhysicsProcess(2);
             Check(view.Warp.State == WarpDrive.Phase.Ready, "Cooldown ends in flight");
@@ -163,9 +169,76 @@ public partial class UniverseTravelChecks : Node
             var draws = view.RetainedDrawCount;
             for (var i = 0; i < 8; i++) await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
             Check(draws > 0 && view.RetainedDrawCount == draws, "Static celestial commands remain cached over moving render frames");
+            Commands();
             GD.Print($"UNIVERSE_TRAVEL_CHECKS_PASS: {_checks} assertions");
             GetTree().Quit();
         }
         catch (Exception error) { GD.PushError(error.ToString()); GetTree().Quit(1); }
+    }
+
+    private void Commands()
+    {
+        var bodies = Array.Empty<UniverseGenerator.CelestialBody>();
+        var traffic = new UniverseTraffic();
+        var ship = new ModularShip();
+        ship.SeedReferenceShip();
+        var vessel = traffic.AddOwned(ship, new Vector2(5000, 5000), "测试舰");
+        // 驻守：Hold 优先于护航锚点，舰船钉在原地。
+        vessel.Hold = true; vessel.Escort = false;
+        var post = vessel.Position;
+        for (var i = 0; i < 90; i++) traffic.Step(1f / 60, post + Vector2.Right * 5000, 0, bodies);
+        Check(vessel.Position.DistanceTo(post) < 5, "Hold commands anchor the vessel at its post");
+        Check(vessel.CommandLabel == "驻守", "Hold state reports the garrison label");
+        // 移动指令：沿指令方向推进。
+        vessel.Hold = false;
+        vessel.CommandDestination = post + Vector2.Right * 3000;
+        var peakSpeed = 0f;
+        for (var i = 0; i < 240; i++)
+        { traffic.Step(1f / 60, post, 0, bodies); peakSpeed = Mathf.Max(peakSpeed, vessel.Velocity.Length()); }
+        Check(vessel.Position.DistanceTo(post) > 300 && (vessel.Position - post).Dot(Vector2.Right) > 0,
+            "Move commands drive the vessel along the ordered destination");
+        Check(peakSpeed > 500, "Commanded cruise reaches high speed instead of crawling");
+        // 到达即停：继续推进后舰船应在目的地附近刹停并转驻守，而不是全速绕圈。
+        var destination = post + Vector2.Right * 3000;
+        // 高速巡航会有一次过冲再回稳，给足 60 秒收敛窗口。
+        for (var i = 0; i < 3600; i++) traffic.Step(1f / 60, post, 0, bodies);
+        Check(vessel.CommandDestination is null && vessel.Hold, "Vessels switch to hold after reaching the ordered destination");
+        Check(vessel.Position.DistanceTo(destination) < 150 && vessel.Velocity.Length() < 30,
+            "Vessels brake to a stop near the ordered destination");
+        // 集火优先级：攻击指令压过移动指令。
+        var enemyShip = new ModularShip();
+        enemyShip.SeedReferenceShip();
+        var enemy = new UniverseTraffic.Vessel { Name = "敌舰", Ship = enemyShip,
+            Anchor = post + Vector2.Right * 1200, Position = post + Vector2.Right * 1200,
+            PreviousPosition = post + Vector2.Right * 1200, FactionId = FactionRelations.Pirates,
+            Radius = enemyShip.BoundingRadius() };
+        vessel.CommandDestination = post + Vector2.Left * 3000;
+        vessel.CombatTarget = enemy;
+        for (var i = 0; i < 240; i++)
+        { enemy.Position = enemy.PreviousPosition = post + Vector2.Right * 1200; traffic.Step(1f / 60, post, 0, bodies); }
+        Check(vessel.CommandLabel == "攻击", "Attack state reports the engage label");
+        Check((vessel.Position - post).Dot(Vector2.Right) > 0, "Attack command overrides the ordered move destination");
+        vessel.CombatTarget = null; vessel.CommandDestination = null; vessel.Escort = true; vessel.Hold = false;
+        Check(vessel.CommandLabel == "护航", "Escort state reports the follow label");
+        // 旗舰指挥：自动航行直接构造 Command（与驾驶模式解耦）——朝目标旋转推进、到达转驻守、驻守主动制动。
+        var flagship = new UniverseView(); flagship.SetShip(ship); AddChild(flagship);
+        Set(flagship, "_playerPosition", Vector2.Zero);
+        Set(flagship, "_playerVelocity", Vector2.Zero);
+        Set(flagship, "_playerHeading", -Mathf.Pi / 2); // 舰首朝上而目标在右：必须产生向右的旋转误差
+        Set(flagship, "_playerCommand", Vector2.Right * 2000);
+        var autopilot = typeof(UniverseView).GetMethod("AutopilotCommand", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var commandField = typeof(UniverseView).GetField("_playerCommand", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var holdField = typeof(UniverseView).GetField("_playerHold", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var move = (ShipFlightController.Command?)autopilot.Invoke(flagship, null);
+        Check(move is { } mc && mc.HeadingError > 0.5f && mc.LocalTranslation.Length() > 0,
+            "Flagship autopilot rotates and thrusts toward the commanded destination");
+        Set(flagship, "_playerPosition", Vector2.Right * 1950);
+        autopilot.Invoke(flagship, null);
+        Check(commandField.GetValue(flagship) is null && (bool)holdField.GetValue(flagship)!,
+            "Flagship clears the move command and switches to hold on arrival");
+        Set(flagship, "_playerHeading", 0f);
+        Set(flagship, "_playerVelocity", Vector2.Right * 300);
+        var brake = (ShipFlightController.Command?)autopilot.Invoke(flagship, null);
+        Check(brake is { } bc && bc.LocalTranslation.X < 0, "Flagship hold command brakes against current velocity");
     }
 }

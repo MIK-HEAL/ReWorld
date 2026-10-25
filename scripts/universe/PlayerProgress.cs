@@ -30,6 +30,28 @@ public sealed class FactoryData
     public string PlanetId { get; set; } = "";
     public string Biome { get; set; } = "iron";
     public int Count { get; set; }
+    /// <summary>各座工厂的模块化蓝图（按建造顺序对齐槽位 0..Count-1）；
+    /// 旧存档/旧式工厂没有对应条目，产出回落到 Count × 群系基准。</summary>
+    public List<FactorySlotData> Slots { get; set; } = new();
+}
+
+/// <summary>模块化工厂的单个模块存档记录（JSON 安全的网格坐标 + 朝向）。</summary>
+public sealed class FactoryModuleData
+{
+    public string Kind { get; set; } = "";
+    public int X { get; set; }
+    public int Y { get; set; }
+    public int Rotation { get; set; }
+}
+
+/// <summary>单座模块化工厂的蓝图快照与建造时锁定的资源产出速率。</summary>
+public sealed class FactorySlotData
+{
+    public List<FactoryModuleData> Modules { get; set; } = new();
+    /// <summary>铁质碎料产出（单位/s），由蓝图矿机数与群系倍率决定。</summary>
+    public float OreRate { get; set; }
+    /// <summary>合金产出（单位/s），由蓝图精炼炉数与群系倍率决定。</summary>
+    public float AlloyRate { get; set; }
 }
 
 public sealed class PlayerProgress
@@ -47,6 +69,14 @@ public sealed class PlayerProgress
     public HashSet<string> ClaimedPlanets { get; set; } = new();
     /// <summary>各星球地表工厂群：登陆后建造，按生物群系持续产出资源。</summary>
     public List<FactoryData> Factories { get; set; } = new();
+    /// <summary>玩家库存的工厂产资源（iron 铁质碎料 / alloy 合金），到空间站交易页出售换 R。</summary>
+    public Dictionary<string, int> ResourceStock { get; set; } = new();
+    /// <summary>资源市场时钟（秒）：驱动行情的周期性波动。</summary>
+    public float MarketTime { get; set; }
+    /// <summary>碎料市场供给压力：抛售抬升、压低成交价，随时间回稳。</summary>
+    public float IronPressure { get; set; }
+    /// <summary>合金市场供给压力。</summary>
+    public float AlloyPressure { get; set; }
     public HashSet<string> MinedDeposits { get; set; } = new();
     public List<MissionState> Missions { get; set; } = new();
     /// <summary>按派系累计的击杀台账（含中立目标），用于外交面板威胁评估。</summary>
@@ -225,12 +255,172 @@ public sealed class PlayerProgress
         return true;
     }
 
-    /// <summary>全部地表工厂的合计产出速率（R/s）。</summary>
+    /// <summary>老式（无蓝图）工厂的合计 R 产出（R/s）——旧档与程序化直建走此通道；
+    /// 模块化槽不产 R，改为产出铁质碎料/合金入库存。热路径只读字段，零分配。</summary>
     public float FactoryIncomeRate()
     {
         var rate = 0f;
-        foreach (var factory in Factories) rate += factory.Count * FactoryRateOf(factory.Biome);
+        foreach (var factory in Factories)
+        {
+            for (var i = 0; i < factory.Count; i++)
+            {
+                if (i < factory.Slots.Count && factory.Slots[i].Modules.Count > 0) continue;
+                rate += FactoryRateOf(factory.Biome);
+            }
+        }
         return rate;
+    }
+
+    /// <summary>模块化工厂的合计资源产出（单位/s）：矿机产碎料、精炼炉产合金。热路径零分配。</summary>
+    public (float Ore, float Alloy) FactoryResourceRates()
+    {
+        float ore = 0, alloy = 0;
+        foreach (var factory in Factories)
+        {
+            for (var i = 0; i < factory.Count && i < factory.Slots.Count; i++)
+            {
+                if (factory.Slots[i].Modules.Count == 0) continue;
+                ore += factory.Slots[i].OreRate;
+                alloy += factory.Slots[i].AlloyRate;
+            }
+        }
+        return (ore, alloy);
+    }
+
+    /// <summary>群系倍率（与 FactoryRateOf 的基准比例一致：铁 1.0 / 晶体 1.6 / 合金 1.2 / 挥发物 0.7）。</summary>
+    public static float BiomeMultiplier(string biome) => biome switch
+    {
+        "crystal" => 1.6f,
+        "alloy" => 1.2f,
+        "volatile" => 0.7f,
+        _ => 1.0f,
+    };
+
+    /// <summary>工厂模块折价（R）：铁质碎料 10 R/单位，合金 25 R/单位。</summary>
+    public static int ModuleCostR(ModuleDefinition definition) =>
+        (int)definition.Cost.GetValueOrDefault("iron") * 10
+        + (int)definition.Cost.GetValueOrDefault("alloy") * 25;
+
+    /// <summary>整份蓝图（模块集合）的物料成本合计。</summary>
+    public static int BlueprintCostR(List<FactoryModuleData> modules)
+    {
+        var cost = 0;
+        foreach (var module in modules)
+            if (FactoryModuleGraph.Definitions.TryGetValue(module.Kind, out var definition))
+                cost += ModuleCostR(definition);
+        return cost;
+    }
+
+    /// <summary>
+    /// 计算模块化工厂蓝图的资源产出（单位/s）：只有连通核心的矿机产铁质碎料、
+    /// 精炼炉产合金；群系倍率（BiomeMultiplier）决定品位高低。产出入玩家库存，
+    /// 到空间站交易页出售换 R（行情波动，抛售压价）。
+    /// </summary>
+    public static (float Ore, float Alloy) BlueprintProduction(string biome, List<FactoryModuleData> modules)
+    {
+        if (modules.Count == 0) return (0, 0);
+        var graph = new FactoryModuleGraph();
+        foreach (var module in modules)
+            graph.AddModule(module.Kind, new Vector2I(module.X, module.Y), module.Rotation);
+        var operational = graph.GetOperationalModuleIds();
+        double ore = 0, alloy = 0;
+        foreach (var module in graph.Modules)
+        {
+            if (!operational.Contains(module.Id)) continue;
+            var definition = FactoryModuleGraph.Definitions[module.Kind];
+            ore += definition.OreRate;
+            alloy += definition.RefineRate;
+        }
+        var multiplier = BiomeMultiplier(biome);
+        return ((float)(ore * multiplier), (float)(alloy * multiplier));
+    }
+
+    /// <summary>资源显示名。</summary>
+    public static string ResourceLabel(string kind) => kind switch
+    {
+        "alloy" => "合金",
+        "iron" => "铁质碎料",
+        _ => kind,
+    };
+    /// <summary>资源市场基价（R/单位），出售价在此基础上波动、随抛售压价。</summary>
+    public static float ResourceBasePrice(string kind) => kind == "alloy" ? 2f : 1f;
+
+    /// <summary>当前行情价（R/单位）：基价 × 周期波动（±18%）× 供需系数（抛售最多压 45%）。
+    /// marketTime 为市场时钟（秒）；两种资源错相位波动，形成跨品种套利空间。</summary>
+    public static float ResourcePrice(string kind, float pressure, float marketTime)
+    {
+        var phase = kind == "alloy" ? 2.399f : 0f;
+        var wave = 1f + 0.18f * Mathf.Sin(marketTime * 0.07f + phase);
+        var demand = 1f - Mathf.Clamp(pressure, 0f, 0.45f);
+        return ResourceBasePrice(kind) * wave * demand;
+    }
+
+    /// <summary>行情趋势：true = 当前处于上行段（可显示 ↑）。</summary>
+    public static bool ResourcePriceRising(string kind, float marketTime) =>
+        Mathf.Cos(marketTime * 0.07f + (kind == "alloy" ? 2.399f : 0f)) > 0f;
+
+    /// <summary>把工厂采出的资源计入库存（tick 结算整数单位）。</summary>
+    public void AddResource(string kind, int amount)
+    {
+        if (amount <= 0) return;
+        ResourceStock[kind] = (int)Math.Min(int.MaxValue - 1L, ResourceStock.GetValueOrDefault(kind) + amount);
+    }
+
+    /// <summary>市场时钟与供需压力：Time 持续推进，抛售抬升 Pressure，市场缓慢回稳。</summary>
+    public void TickMarket(float dt)
+    {
+        MarketTime += dt;
+        if (IronPressure > 0) IronPressure = Math.Max(0, IronPressure - dt * 0.02f);
+        if (AlloyPressure > 0) AlloyPressure = Math.Max(0, AlloyPressure - dt * 0.02f);
+    }
+
+    public float MarketPressureOf(string kind) => kind == "alloy" ? AlloyPressure : IronPressure;
+
+    /// <summary>抛售抬升供给压力（单位量 × 系数），立即压低后续成交价。</summary>
+    public void AddMarketPressure(string kind, float amount)
+    {
+        if (kind == "alloy") AlloyPressure = Math.Min(0.45f, AlloyPressure + amount);
+        else IronPressure = Math.Min(0.45f, IronPressure + amount);
+    }
+
+    /// <summary>读取某星球第 slot 座工厂的蓝图（未模块化/越界返回 null）。</summary>
+    public List<FactoryModuleData>? FactorySlotBlueprint(string planetId, int slot)
+    {
+        var entry = Factories.FirstOrDefault(f => f.PlanetId == planetId);
+        if (entry is null || slot < 0 || slot >= entry.Slots.Count) return null;
+        var modules = entry.Slots[slot].Modules;
+        return modules.Count > 0 ? modules : null;
+    }
+
+    /// <summary>
+    /// 用模块化蓝图新建一座工厂（费用由调用方扣除）；容量语义与 TryAddFactory 一致。
+    /// 返回新工厂的资源产出（碎料/s, 合金/s）。
+    /// </summary>
+    public (float Ore, float Alloy) TryAddFactoryWithBlueprint(string planetId, string biome, List<FactoryModuleData> modules)
+    {
+        var entry = Factories.FirstOrDefault(f => f.PlanetId == planetId);
+        if (entry is null) Factories.Add(entry = new FactoryData { PlanetId = planetId, Biome = biome });
+        if (entry.Count >= MaxFactoriesPerPlanet) return (0, 0);
+        entry.Count++;
+        var production = BlueprintProduction(biome, modules);
+        entry.Slots.Add(new FactorySlotData { Modules = modules, OreRate = production.Ore, AlloyRate = production.Alloy });
+        Commit();
+        return production;
+    }
+
+    /// <summary>
+    /// 修改某星球第 slot 座工厂的模块布局（费用/差价由调用方扣除）。
+    /// 旧式工厂补空占位后升级为模块化；产出按新蓝图重新锁定。
+    /// </summary>
+    public (float Ore, float Alloy) TryUpdateFactorySlot(string planetId, int slot, List<FactoryModuleData> modules)
+    {
+        var entry = Factories.FirstOrDefault(f => f.PlanetId == planetId);
+        if (entry is null || slot < 0 || slot >= entry.Count || slot >= MaxFactoriesPerPlanet) return (0, 0);
+        while (entry.Slots.Count <= slot) entry.Slots.Add(new FactorySlotData());
+        var production = BlueprintProduction(entry.Biome, modules);
+        entry.Slots[slot] = new FactorySlotData { Modules = modules, OreRate = production.Ore, AlloyRate = production.Alloy };
+        Commit();
+        return production;
     }
 
     public void Commit()
@@ -256,7 +446,7 @@ public sealed class PlayerProgress
             progress.Unlocked ??= new(); progress.Diplomacy ??= new(); progress.Diplomacy.States ??= new();
             progress.MinedDeposits ??= new(); progress.FleetDesigns ??= new(); progress.Missions ??= new();
             progress.Kills ??= new(); progress.Colonies ??= new(); progress.ClaimedPlanets ??= new();
-            progress.Factories ??= new();
+            progress.Factories ??= new(); progress.ResourceStock ??= new();
             // 旧存档只有首座基地坐标：迁移为领地列表的第一条记录。
             if (progress.Established && progress.Colonies.Count == 0)
                 progress.Colonies.Add(new ColonyData { X = progress.BaseX, Y = progress.BaseY });

@@ -24,6 +24,66 @@ public static class UniverseGenerator
     /// <summary>Enemy faction traffic participates in normal system generation.</summary>
     public static bool GenerateEnemyFactions { get; } = true;
 
+    /// <summary>可拥有星系空间站的主要 NPC 势力池（确定性派系分配与合约签发共用）。</summary>
+    public static readonly int[] MajorStationFactions =
+        { FactionRelations.League, FactionRelations.Red, FactionRelations.Crystal, 4, 6 };
+
+    /// <summary>
+    /// 星系空间站归属派系：启明星系固定联航共同体（玩家母港），其余星系按独立种子确定性分配。
+    /// 与 GenerateSystem 的天体随机流互不干扰，保证天体布局不因派系化而漂移。
+    /// </summary>
+    public static int StationFactionOf(Vector2I cell)
+    {
+        if (cell == Vector2I.Zero) return FactionRelations.League;
+        // 与 MissionCatalog 同源的稳定哈希；System.HashCode 按进程随机化，禁止用于可存档内容。
+        var seed = unchecked(cell.X * 73856093 ^ cell.Y * 19349663);
+        var rand = new Random(seed);
+        return MajorStationFactions[rand.Next(MajorStationFactions.Length)];
+    }
+
+    /// <summary>
+    /// 星球归属：约 60% 归入本星系主站势力，其余无主（0）可供玩家认领。
+    /// 启明星系全部归联航共同体。与天体随机流独立，保证星球布局不因派系化而漂移。
+    /// </summary>
+    public static int PlanetFactionOf(Vector2I cell, int planetIndex)
+    {
+        if (cell == Vector2I.Zero) return FactionRelations.League;
+        var seed = unchecked(cell.X * 374761393 + cell.Y * 668265263 ^ planetIndex * 265443576);
+        seed = unchecked((seed ^ (seed >> 13)) * 1274126177);
+        seed ^= seed >> 16;
+        return (uint)seed % 100 < 60 ? StationFactionOf(cell) : 0;
+    }
+
+    /// <summary>
+    /// 星系航道拓扑（确定性随机）：每格恒有一条指向母港方向的主干航道（逐步靠近原点，
+    /// 保证全域连通、无环）；其余相邻星系按无序对稳定哈希约 35% 概率生成支线航道。
+    /// 相邻但未连航道的星系不可直接迁跃，需沿已连通航道中转。
+    /// </summary>
+    public static bool SystemsLinked(Vector2I a, Vector2I b)
+    {
+        if (a == b) return false;
+        var delta = b - a;
+        if (Math.Abs(delta.X) > 1 || Math.Abs(delta.Y) > 1) return false;
+        if (SpanningParent(a) == b || SpanningParent(b) == a) return true;
+        var lo = a; var hi = b;
+        if (lo.X > hi.X || (lo.X == hi.X && lo.Y > hi.Y)) (lo, hi) = (hi, lo);
+        unchecked
+        {
+            long hash = lo.X * 73856093L ^ hi.X * 19349663L ^ lo.Y * 83492791L ^ hi.Y * 2971215073L;
+            hash = (hash ^ (hash >> 27)) * 2654435761L;
+            hash ^= hash >> 31;
+            return (uint)hash % 100 < 35;
+        }
+    }
+
+    /// <summary>主干航道父节点：每步严格向原点靠近一格（曼哈顿距离递减，故无环且必达）。</summary>
+    public static Vector2I SpanningParent(Vector2I cell)
+    {
+        if (cell == Vector2I.Zero) return cell;
+        if (Math.Abs(cell.X) >= Math.Abs(cell.Y)) return new(cell.X - Math.Sign(cell.X), cell.Y);
+        return new(cell.X, cell.Y - Math.Sign(cell.Y));
+    }
+
     /// <summary>世界坐标 → 扇区坐标（向下取整）。</summary>
     public static Vector2I WorldToSector(Vector2 world)
     {
@@ -57,6 +117,8 @@ public static class UniverseGenerator
     {
         public string SystemId { get; init; } = "";
         public string SystemName { get; init; } = "";
+        /// <summary>空间站归属派系；启明星系固定为联航共同体，其余星系确定性分配主要 NPC 势力。</summary>
+        public int FactionId { get; init; } = FactionRelations.League;
         /// <summary>稳定的天体标识；后续轨道交互与地表存档共用。</summary>
         public required string Id { get; init; }
         public required Vector2 Position { get; init; }
@@ -81,6 +143,9 @@ public static class UniverseGenerator
         /// 引力强度 = 引力常数 × 质量。质量越大、半径越大，引力越强。
         /// </summary>
         public float GravityStrength { get; init; }
+
+        /// <summary>星球势力范围半径：在此圈内建站即可认领/运营该星球领地。</summary>
+        public float TerritoryRadius => Radius * 1.55f;
     }
 
     public enum CelestialKind
@@ -89,6 +154,8 @@ public static class UniverseGenerator
         Station,
         AsteroidField,
         Star,
+        /// <summary>海盗空域：无实体表面，只作区域标识与导航显示。</summary>
+        PirateZone,
     }
 
     public sealed record StarSystem(string Id, string Name, Vector2 Center, IReadOnlyList<CelestialBody> Bodies);
@@ -118,7 +185,10 @@ public static class UniverseGenerator
         var id = $"system:{cell.X}:{cell.Y}";
         var name = SystemName(cell);
         var bodies = new List<CelestialBody>(12);
-        var planets = 4 + rng.Next(3);
+        // 星系原型多样化：行星数、站点数、碎石带密度都由星系种子决定，宇宙不再是流水线布局。
+        var planets = 3 + rng.Next(4);
+        var stationCount = 1 + rng.Next(3);
+        var innerFields = 1 + rng.Next(3);
         var phase = cell == Vector2I.Zero ? 0 : (float)rng.NextDouble() * Mathf.Tau;
         // 内到外的轨道带有足够的径向间距；角度由星系种子决定。
         for (var i = 0; i < planets; i++)
@@ -134,6 +204,7 @@ public static class UniverseGenerator
                 Position = position, Kind = CelestialKind.Planet,
                 Name = cell == Vector2I.Zero && i == 0 ? "启明星 · 母星" : PlanetName(rng, cell, i),
                 Radius = radius, ColorHex = BiomeColor(biome), Biome = biome,
+                FactionId = PlanetFactionOf(cell, i),
                 GravityRadius = radius * PlanetGravityRadiusMultiplier,
                 GravityStrength = radius * radius * 100,
             });
@@ -147,21 +218,24 @@ public static class UniverseGenerator
             GravityRadius = starRadius * StarGravityRadiusMultiplier,
             GravityStrength = starRadius * starRadius * 120,
         });
-        for (var i = 0; i < 1 + planets / 4; i++)
+        for (var i = 0; i < stationCount; i++)
         {
-            var planet = bodies[i * 2];
+            var planet = bodies[i % planets];
             var position = planet.Position + Vector2.Down.Rotated(phase + i) * (planet.Radius + 1400);
+            // 站点仍须避开任何已有天体（行星轨道可能因黄金角分布而靠近）。
+            if (bodies.Exists(body => body.Position.DistanceTo(position) < body.Radius + 160 + 1200)) continue;
             bodies.Add(new CelestialBody
             {
                 Id = $"{id}:station:{i}", SystemId = id, SystemName = name,
                 Position = position, Kind = CelestialKind.Station, Name = StationName(rng),
                 Radius = 160, ColorHex = "#7bb7e8",
                 GravityRadius = 0, GravityStrength = 0,
+                FactionId = StationFactionOf(cell),
             });
         }
-        for (var i = 0; i < 2; i++)
+        for (var i = 0; i < innerFields; i++)
         {
-            var position = center + Vector2.Right.Rotated(phase + 1.2f + i * 2.4f) * (15500 + i * 9000);
+            var position = center + Vector2.Right.Rotated(phase + 1.2f + i * 2.4f) * (14800 + i * 6200);
             var radius = 90 + (float)rng.NextDouble() * 160;
             if (bodies.Exists(body => body.Position.DistanceTo(position) < body.Radius + radius + 1200)) continue;
             bodies.Add(new CelestialBody
@@ -171,7 +245,56 @@ public static class UniverseGenerator
                 Radius = radius, ColorHex = "#8c9aaa",
             });
         }
+        // 星系外围碎石环带：沿系统边缘一圈稀疏的陨石簇，像 Reassembly 的边境碎屑带。
+        var ringCount = 6 + rng.Next(9);
+        var ringBase = 29600 + rng.NextDouble() * 1600;
+        for (var i = 0; i < ringCount; i++)
+        {
+            var angle = phase + i * Mathf.Tau / ringCount + (float)(rng.NextDouble() - 0.5) * 0.22f;
+            var orbit = (float)(ringBase + (rng.NextDouble() - 0.5) * 2400);
+            var position = center + Vector2.Right.Rotated(angle) * orbit;
+            var radius = 110 + (float)rng.NextDouble() * 150;
+            if (position.DistanceTo(center) + radius > SystemRadius) continue;
+            if (bodies.Exists(body => body.Position.DistanceTo(position) < body.Radius + radius + 1200)) continue;
+            bodies.Add(new CelestialBody
+            {
+                Id = $"{id}:outerbelt:{i}", SystemId = id, SystemName = name,
+                Position = position, Kind = CelestialKind.AsteroidField, Name = $"{name} · 外环碎石 {i + 1}",
+                Radius = radius, ColorHex = "#75828f",
+            });
+        }
+        // 海盗空域：约一半星系在外围刷新一片掠夺者盘踞区（剿匪合约的目标地）。
+        if (PirateZoneSeed(cell) is { } zoneSeed)
+        {
+            var zoneRand = new Random(zoneSeed);
+            var zoneRadius = 2100f;
+            for (var attempt = 0; attempt < 8; attempt++)
+            {
+                var angle = (float)zoneRand.NextDouble() * Mathf.Tau;
+                var orbit = 26500 + (float)zoneRand.NextDouble() * 4800;
+                var position = center + Vector2.Right.Rotated(angle) * orbit;
+                if (position.DistanceTo(center) + zoneRadius > SystemRadius) continue;
+                if (bodies.Exists(body => body.Position.DistanceTo(position) < body.Radius + zoneRadius + 1200)) continue;
+                bodies.Add(new CelestialBody
+                {
+                    Id = $"{id}:pirates", SystemId = id, SystemName = name,
+                    Position = position, Kind = CelestialKind.PirateZone, Name = $"{name} · 海盗空域",
+                    Radius = zoneRadius, ColorHex = "#c25656", FactionId = FactionRelations.Pirates,
+                });
+                break;
+            }
+        }
         return new StarSystem(id, name, center, bodies);
+    }
+
+    /// <summary>约 45% 的星系存在海盗空域；返回其确定性子种子，否则 null。</summary>
+    private static int? PirateZoneSeed(Vector2I cell)
+    {
+        if (cell == Vector2I.Zero) return null; // 母港星系保持安全。
+        var seed = unchecked((int)(cell.X * 2654435761L ^ cell.Y * 40503L));
+        seed = unchecked((int)((seed ^ (seed >> 15)) * 2246822519L));
+        seed ^= seed >> 13;
+        return (uint)seed % 100 < 45 ? seed : null;
     }
 
     /// <summary>

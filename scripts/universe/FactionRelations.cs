@@ -7,12 +7,12 @@ public enum DiplomaticState { Neutral, Friendly, War, Wanted }
 /// <summary>Faction identity is independent of ship design, paint and fleet ownership.</summary>
 public sealed class FactionRelations
 {
-    public const int Player = 1, League = 8, Red = 3, Crystal = 11;
+    public const int Player = 1, League = 8, Red = 3, Crystal = 11, Pirates = 9;
     public static readonly Dictionary<int, string> Names = new()
     {
         [Player] = "独立舰长", [2] = "农夫公社", [Red] = "赤色联合", [4] = "廷克雷尔",
-        [5] = "植物群落", [6] = "博格", [7] = "飞蝇", [League] = "联航共同体", [10] = "竞技者",
-        [Crystal] = "晶体共同体", [12] = "蜂群", [13] = "棘刺群落", [14] = "深空访客",
+        [5] = "植物群落", [6] = "博格", [7] = "飞蝇", [League] = "联航共同体", [Pirates] = "星际掠夺者",
+        [10] = "竞技者", [Crystal] = "晶体共同体", [12] = "蜂群", [13] = "棘刺群落", [14] = "深空访客",
         [15] = "哨卫", [16] = "边境居民", [100] = "环境设施"
     };
     public Dictionary<string, DiplomaticState> States { get; set; } = new();
@@ -23,6 +23,8 @@ public sealed class FactionRelations
     public DiplomaticState Get(int a, int b)
     {
         if (a == b) return DiplomaticState.Friendly;
+        // 掠夺者与所有正式势力永久交战（环境设施除外），不进入外交存档，也无法停战。
+        if ((a == Pirates || b == Pirates) && a != 100 && b != 100) return DiplomaticState.War;
         if (!ReferenceEquals(_cachedStates, States) || _pairs.Count != States.Count)
         {
             _pairs.Clear();

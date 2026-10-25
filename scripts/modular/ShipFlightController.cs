@@ -189,9 +189,11 @@ public sealed class ShipFlightController
         ShipPropulsion.Result result,
         Vector2 requestedForce)
     {
+        // 热路径：IReadOnlyList 上的 foreach 会装箱枚举器，统一用 for+索引。
         float positive = 0, negative = 0;
-        foreach (var mount in mounts)
+        for (var i = 0; i < mounts.Count; i++)
         {
+            var mount = mounts[i];
             if (!activity.TryGetValue(mount.BlockId, out var level)) continue;
             var mountTorque = mount.Offset.Cross(mount.Force) * mount.Power * level * ShipPropulsion.ForceScale;
             if (mountTorque > 0) positive += mountTorque;
@@ -203,8 +205,9 @@ public sealed class ShipFlightController
         var smaller = Mathf.Min(positive, negative);
         var scale = larger > 0 ? smaller / larger : 1;
         if (scale < 1)
-            foreach (var mount in mounts)
+            for (var i = 0; i < mounts.Count; i++)
             {
+                var mount = mounts[i];
                 if (Mathf.Sign(mount.Offset.Cross(mount.Force)) == largerSide)
                 {
                     activity.TryGetValue(mount.BlockId, out var adjustedLevel);
@@ -215,8 +218,9 @@ public sealed class ShipFlightController
         var force = Vector2.Zero;
         var totalTorque = 0.0f;
         var active = 0;
-        foreach (var mount in mounts)
+        for (var i = 0; i < mounts.Count; i++)
         {
+            var mount = mounts[i];
             activity.TryGetValue(mount.BlockId, out var appliedLevel);
             if (appliedLevel <= 0.0001f) continue;
             active++;
@@ -228,8 +232,9 @@ public sealed class ShipFlightController
         {
             // Remove the final floating-point residual through one active
             // moment arm, keeping the correction inside the actuator bounds.
-            foreach (var mount in mounts)
+            for (var i = 0; i < mounts.Count; i++)
             {
+                var mount = mounts[i];
                 if (!activity.TryGetValue(mount.BlockId, out var level) || level <= 0.0001f) continue;
                 var momentAtFull = mount.Offset.Cross(mount.Force) * mount.Power * ShipPropulsion.ForceScale;
                 if (Mathf.Abs(momentAtFull) < 0.0001f) continue;
@@ -240,8 +245,9 @@ public sealed class ShipFlightController
             force = Vector2.Zero;
             totalTorque = 0;
             active = 0;
-            foreach (var mount in mounts)
+            for (var i = 0; i < mounts.Count; i++)
             {
+                var mount = mounts[i];
                 activity.TryGetValue(mount.BlockId, out var level);
                 if (level <= 0.0001f) continue;
                 active++;

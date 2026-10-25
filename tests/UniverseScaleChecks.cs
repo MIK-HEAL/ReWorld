@@ -79,6 +79,10 @@ public partial class UniverseScaleChecks : Node
                     "Planetary systems avoid overlapping bodies even across sector boundaries");
             Check(planets > 30 && stars >= 9, "Sample covers many complete planetary systems");
             Systems();
+            Topology();
+            Missions();
+            PirateDiplomacy();
+            Landing();
             Check(UniverseGenerator.GenerateEnemyFactions, "Hostile faction generation is enabled");
             var view = new UniverseView();
             AddChild(view);
@@ -138,7 +142,35 @@ public partial class UniverseScaleChecks : Node
             var star = system.Bodies.Single(b => b.Kind == UniverseGenerator.CelestialKind.Star);
             Check(star.Position == system.Center, "Star lies at its system center");
             var planets = system.Bodies.Where(b => b.Kind == UniverseGenerator.CelestialKind.Planet).ToArray();
-            Check(planets.Length is >= 4 and <= 6, "Systems have four to six planets");
+            Check(planets.Length is >= 3 and <= 6, "Systems vary from three to six planets by seed");
+            foreach (var planet in planets)
+            {
+                Check(planet.TerritoryRadius > planet.Radius && planet.TerritoryRadius < planet.Radius * 1.6f,
+                    "Planet territory ring sits just outside the surface");
+                if (cell == Vector2I.Zero)
+                    Check(planet.FactionId == FactionRelations.League, "Home system planets belong to the League");
+                else
+                    Check(planet.FactionId == 0 || UniverseGenerator.MajorStationFactions.Contains(planet.FactionId),
+                        "Frontier planets are either unclaimed or owned by a major faction");
+                Check(UniverseGenerator.PlanetFactionOf(cell, Array.IndexOf(planets, planet)) == planet.FactionId,
+                    "Planet faction assignment is deterministic per system and index");
+            }
+            var stations = system.Bodies.Count(b => b.Kind == UniverseGenerator.CelestialKind.Station);
+            Check(stations is >= 1 and <= 3, "Systems operate one to three faction stations");
+            var belts = system.Bodies.Count(b => b.Kind == UniverseGenerator.CelestialKind.AsteroidField);
+            Check(belts >= 7, "Each system carries a peripheral debris ring in addition to inner asteroid fields");
+            var zones = system.Bodies.Where(b => b.Kind == UniverseGenerator.CelestialKind.PirateZone).ToArray();
+            Check(zones.Length <= 1, "Systems contain at most one pirate zone");
+            if (cell == Vector2I.Zero)
+                Check(zones.Length == 0, "The home system stays free of pirate zones");
+            foreach (var zone in zones)
+            {
+                Check(zone.FactionId == FactionRelations.Pirates, "Pirate zones belong to the pirate faction");
+                Check(zone.GravityRadius == 0 && !zone.HasSurface, "Pirate zones are markers without gravity or surface");
+                var repeat = UniverseGenerator.GenerateSystem(cell);
+                Check(repeat.Bodies.Any(b => b.Id == zone.Id && b.Position == zone.Position),
+                    "Pirate zone placement is deterministic per system");
+            }
             foreach (var body in system.Bodies)
             {
                 Check(body.SystemId == system.Id && body.SystemName == system.Name,
@@ -171,5 +203,129 @@ public partial class UniverseScaleChecks : Node
                 Check(UniverseGenerator.GetNearbyBodies(empty, 0).Count == 0, "Interstellar sectors do not generate independent planets or stations");
             }
         }
+    }
+
+    private void Topology()
+    {
+        var linkedEdges = 0;
+        for (var x = -3; x <= 3; x++)
+        for (var y = -3; y <= 3; y++)
+        {
+            var cell = new Vector2I(x, y);
+            var parent = UniverseGenerator.SpanningParent(cell);
+            if (cell != Vector2I.Zero)
+            {
+                Check(UniverseGenerator.SystemsLinked(cell, parent), "Every cell keeps its spanning-trunk lane toward the home system");
+                Check(Math.Abs(parent.X) + Math.Abs(parent.Y) < Math.Abs(x) + Math.Abs(y),
+                    "Spanning parents strictly approach the origin, so trunk lanes never cycle");
+            }
+            var linkedNeighbors = 0;
+            foreach (var direction in new[] { Vector2I.Right, Vector2I.Up, Vector2I.One, new Vector2I(1, -1) })
+            {
+                var neighbor = cell + direction;
+                var linked = UniverseGenerator.SystemsLinked(cell, neighbor);
+                Check(linked == UniverseGenerator.SystemsLinked(neighbor, cell), "Stellar lanes are symmetric");
+                Check(!linked || Math.Abs(direction.X) <= 1 && Math.Abs(direction.Y) <= 1, "Lanes never skip over a system");
+                if (linked) { linkedEdges++; linkedNeighbors++; }
+            }
+            foreach (var direction in new[] { new Vector2I(2, 0), new Vector2I(0, 3), new Vector2I(2, 1) })
+                Check(!UniverseGenerator.SystemsLinked(cell, cell + direction), "Distant systems are never directly linked");
+            Check(linkedNeighbors >= 1, "Every system keeps at least one outbound lane");
+        }
+        // 49 格区域的主干航道恰好 48 条（原点无父节点）；支线应显著超出主干数量。
+        Check(linkedEdges > 60, "Random branch lanes meaningfully enrich the pure spanning trunk");
+    }
+
+    private void Missions()
+    {
+        for (var x = -2; x <= 2; x++)
+        for (var y = -2; y <= 2; y++)
+        {
+            var cell = new Vector2I(x, y);
+            var missions = MissionCatalog.Generate(cell);
+            Check(missions.Count == 4, "Every system offers hunt, bounty, mining and anti-pirate contracts");
+            var pirate = missions.Single(m => m.Kind == MissionKind.Pirate);
+            Check(pirate.Faction == FactionRelations.Pirates && pirate.Goal is >= 2 and <= 3,
+                "Anti-pirate contracts target the pirate faction with a small kill goal");
+            Check(MissionCatalog.Find(pirate.Id) == pirate, "Anti-pirate contract resolves from its id");
+            var repeat = MissionCatalog.Generate(cell);
+            Check(repeat.Count == missions.Count && repeat[3].Title == missions[3].Title && repeat[3].Reward == missions[3].Reward,
+                "Contract catalogs stay deterministic across regeneration");
+        }
+    }
+
+    private void PirateDiplomacy()
+    {
+        foreach (var faction in new[] { FactionRelations.Player, FactionRelations.League, FactionRelations.Red, FactionRelations.Crystal })
+            Check(FactionRelations.Pirates != faction &&
+                new FactionRelations().Hostile(FactionRelations.Pirates, faction),
+                "Pirates are permanently at war with every established faction");
+        Check(new FactionRelations().Get(FactionRelations.Pirates, FactionRelations.Pirates) == DiplomaticState.Friendly,
+            "Pirates do not fire on their own kind");
+        Check(!new FactionRelations().Hostile(FactionRelations.Pirates, 100),
+            "Pirate hostility ignores environmental actors");
+    }
+
+    private void Landing()
+    {
+        const BindingFlags hidden = BindingFlags.Instance | BindingFlags.NonPublic;
+        // 数据层：工厂报价、容量与产出聚合。
+        var progress = new PlayerProgress();
+        Check(PlayerProgress.FactoryCost(0) == 400 && PlayerProgress.FactoryCost(2) == 900,
+            "Factory pricing scales with the local build count");
+        Check(Mathf.Abs(PlayerProgress.FactoryRateOf("crystal") - 0.16f) < 1e-4f,
+            "Crystal worlds run the highest-yield factories");
+        for (var i = 0; i < PlayerProgress.MaxFactoriesPerPlanet; i++)
+            Check(progress.TryAddFactory("planet:a", "iron"), "Factory buildout fills the planet slot by slot");
+        Check(!progress.TryAddFactory("planet:a", "iron"), "Factory capacity is capped per planet");
+        Check(progress.FactoryCountOf("planet:a") == PlayerProgress.MaxFactoriesPerPlanet,
+            "Factory counts resolve per planet");
+        progress.Factories.Add(new FactoryData { PlanetId = "planet:b", Biome = "crystal", Count = 1 });
+        Check(Mathf.Abs(progress.FactoryIncomeRate() - (PlayerProgress.MaxFactoriesPerPlanet * 0.10f + 0.16f)) < 1e-3f,
+            "Income rate aggregates every factory across planets and biomes");
+
+        // 玩法层：降落 → 锁定 → 认领 → 建厂 → 起飞。
+        var view = new UniverseView();
+        var ship = new ModularShip();
+        ship.SeedReferenceShip();
+        view.SetShip(ship);
+        AddChild(view);
+        view.SetProcess(false);
+        var system = UniverseGenerator.GenerateSystem(new Vector2I(2, -1));
+        var planet = system.Bodies.First(b => b.Kind == UniverseGenerator.CelestialKind.Planet);
+        var positionField = typeof(UniverseView).GetField("_playerPosition", hidden)!;
+        var velocityField = typeof(UniverseView).GetField("_playerVelocity", hidden)!;
+        positionField.SetValue(view, planet.Position + Vector2.Right * (planet.Radius + 120));
+        velocityField.SetValue(view, Vector2.Right * 300);
+        Check(!view.TryLand(planet), "High-speed approaches are rejected for landing");
+        velocityField.SetValue(view, Vector2.Zero);
+        Check(view.TryLand(planet), "Ships land on planet surfaces");
+        Check(view.IsDocked && view.LandedBody == planet, "Landing locks flight controls like docking");
+        typeof(UniverseView).GetMethod("UpdateWorldPhysics", hidden)!.Invoke(view, new object[] { 1f / 60f });
+        var landedPos = (Vector2)positionField.GetValue(view)!;
+        Check(Mathf.Abs(planet.SurfaceDistance(landedPos) - (ship.BoundingRadius() * 0.6f + 8)) < 0.5f,
+            "Landed ships rest exactly on the recorded surface point");
+
+        var free = default(UniverseGenerator.CelestialBody);
+        foreach (var cell in new[] { new Vector2I(2, -1), new Vector2I(-3, 2), new Vector2I(1, 3), new Vector2I(-2, -2) })
+        {
+            free = UniverseGenerator.GenerateSystem(cell).Bodies
+                .FirstOrDefault(b => b.Kind == UniverseGenerator.CelestialKind.Planet && b.FactionId == 0);
+            if (free is not null) break;
+        }
+        Check(free is not null, "Frontier systems expose unowned planets to claim");
+        Check(view.TakeOff(), "Ships take off from the surface");
+        Check(!view.IsDocked, "Takeoff restores flight controls");
+
+        positionField.SetValue(view, free!.Position + Vector2.Right * (free.Radius + 120));
+        view.Progress.Resources = 5000;
+        Check(view.TryLand(free), "Captains land on unowned planets");
+        Check(view.ClaimPlanet(), "Captains claim unowned planets from the surface");
+        Check(view.Progress.ClaimedPlanets.Contains(free.Id), "Claimed planets are recorded in campaign progress");
+        Check(!view.ClaimPlanet(), "Claiming an already-owned planet fails");
+        Check(view.BuildFactory(), "Factories build on claimed planets");
+        Check(view.Progress.FactoryCountOf(free.Id) == 1, "Factory counts persist per planet");
+        Check(view.TakeOff(), "Ships take off after surface operations");
+        view.QueueFree();
     }
 }

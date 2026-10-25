@@ -47,9 +47,35 @@ public partial class UniverseView : Node2D
 
     private Font _font = null!;
     private int _bodyRegenCounter;
-    private readonly record struct BackgroundStar(Vector2 Position, float Size, Color Tint);
-    private readonly List<BackgroundStar> _backgroundStars = new(450);
+    private readonly record struct BackgroundStar(Vector2 Position, float Size, Color Tint, float TwinklePhase);
+    private readonly List<BackgroundStar> _backgroundStars = new(650);
+    /// <summary>经典星层：最初版本的蓝灰小星，不闪烁，与彩色闪烁星叠加增加密度。</summary>
+    private readonly List<BackgroundStar> _classicStars = new(500);
     private Vector2I _starSector = new(int.MaxValue, int.MaxValue);
+
+    /// <summary>深空背景渐变纹理（径向：中心微亮深蓝 → 边缘近黑）。</summary>
+    private GradientTexture2D _deepSpaceGradient = null!;
+    /// <summary>星云絮团：相对云心的偏移、半径、纤维朝向与长宽比、色泽与透明度。</summary>
+    private readonly record struct NebulaBlob(Vector2 Offset, float Radius, float Rotation, float Stretch, Color Tint, float Alpha);
+    /// <summary>一团星云 = 若干絮团集合（雾状、无清晰圆形轮廓），按星系网格确定性生成，包裹在星系外围。</summary>
+    private readonly record struct NebulaCloud(Vector2 Position, float Radius, NebulaBlob[] Blobs);
+    private readonly List<NebulaCloud> _nebulae = new(40);
+    private Vector2I _nebulaCell = new(int.MaxValue, int.MaxValue);
+
+    /// <summary>星云调色板（外层色 → 内核色）：青蓝 / 紫罗兰 / 暗玫 / 琥珀尘埃。</summary>
+    private static readonly Color[][] NebulaPalettes =
+    {
+        new[] { new Color("#2a6a94"), new Color("#0e2537") },
+        new[] { new Color("#5a3f8e"), new Color("#161033") },
+        new[] { new Color("#8e3a62"), new Color("#22102a") },
+        new[] { new Color("#9a6a28"), new Color("#241a0e") },
+    };
+
+    /// <summary>星光调色板：冷白 / 暖白 / 淡青 / 淡金 / 淡蓝紫 / 淡玫。</summary>
+    private static readonly Color[] StarTints =
+    {
+        new("#c9d9f2"), new("#eee3c9"), new("#aadfe8"), new("#f2d8a8"), new("#c3bdf2"), new("#e8c9d9"),
+    };
 
     /// <summary>玩家舰体（来自模块化造舰编辑器）。未设置时只显示占位图形。</summary>
     private ModularShip? _ship;
@@ -98,10 +124,29 @@ public partial class UniverseView : Node2D
         _visualPlayerPosition = _playerPosition;
         _visualPlayerHeading = _playerHeading;
         _cameraPosition = _playerPosition;
-        RenderingServer.SetDefaultClearColor(new Color("#121b24"));
+        RenderingServer.SetDefaultClearColor(new Color("#081019"));
+        _deepSpaceGradient = new GradientTexture2D
+        {
+            Gradient = CreateDeepSpaceGradient(),
+            Fill = GradientTexture2D.FillEnum.Radial,
+            FillFrom = new Vector2(0.5f, 0.42f),
+            FillTo = new Vector2(0.94f, 0.5f),
+            Width = 512,
+            Height = 512,
+        };
+        // 背景层画在最底层（渐变 + 星云 + 星空），必须先于天体层 AddChild 才会被天体覆盖。
+        AddChild(new DeepSpaceLayer(this) { Name = "DeepSpaceBackdrop", ShowBehindParent = true });
         InitializeWorldServices();
         RefreshVisibleBodies();
         ResumeFlight();
+    }
+
+    private static Gradient CreateDeepSpaceGradient()
+    {
+        var gradient = new Gradient();
+        gradient.SetColor(0, new Color("#234058"));
+        gradient.SetColor(1, new Color("#081019"));
+        return gradient;
     }
 
     public override void _Process(double delta)
@@ -124,6 +169,12 @@ public partial class UniverseView : Node2D
 
     public override void _PhysicsProcess(double delta)
     {
+        // AI 暂停：step 预算耗尽前放行本帧物理，其余帧直接挂起（观察快照仍可读取）。
+        if (AiPaused)
+        {
+            if (AiStepBudget <= 0) return;
+            AiStepBudget -= (float)delta;
+        }
         if (_ship is not null && _flightProfile.Revision != _ship.Revision) RefreshFlightProfile();
         if (UpdateWorldPhysics((float)delta)) { TickCombat((float)delta); return; }
         _previousPlayerPosition = _playerPosition;
@@ -132,16 +183,29 @@ public partial class UniverseView : Node2D
         var elapsed = (float)Math.Min(delta, 0.1);
         var steps = Math.Max(1, Mathf.CeilToInt(elapsed * 120));
         var dt = elapsed / steps;
-        var controls = _chartOpen || _tableOpen || _diplomacyOpen || _ship is { HasLiveCore: false } ? default : ShipFlightController.ReadControls();
+        var controls = _chartOpen || _tableOpen || _diplomacyOpen || _ship is { HasLiveCore: false }
+            ? default : AiControls ?? ShipFlightController.ReadControls();
+        // 指挥模式下旗舰可被下达移动/驻守指令，自动航行直接构造 Command（不受驾驶模式影响）。
+        ShipFlightController.Command? autoCommand = null;
+        if (_tableOpen && _ship is { HasLiveCore: true }) autoCommand = AutopilotCommand();
         for (var i = 0; i < steps; i++)
         {
             Vector2? aim = null;
-            if (!_chartOpen && !_tableOpen && !_diplomacyOpen && _pointerScreen is { } pointer && !MiniMapRect.HasPoint(pointer))
+            if (!_chartOpen && !_tableOpen && !_diplomacyOpen)
             {
-                var fromShip = pointer - WorldToScreen(_visualPlayerPosition);
-                if (fromShip.LengthSquared() > 16 * 16) aim = fromShip;
+                if (AiAimPoint is { } aiAim)
+                {
+                    // AI 瞄准：世界坐标方向向量，语义与光标向量一致（只用角度与长度阈值）。
+                    var fromAi = aiAim - _playerPosition;
+                    if (fromAi.LengthSquared() > 16 * 16) aim = fromAi;
+                }
+                else if (_pointerScreen is { } pointer && !MiniMapRect.HasPoint(pointer))
+                {
+                    var fromShip = pointer - WorldToScreen(_visualPlayerPosition);
+                    if (fromShip.LengthSquared() > 16 * 16) aim = fromShip;
+                }
             }
-            var command = _pilot.Resolve(controls, _playerHeading, aim);
+            var command = autoCommand ?? _pilot.Resolve(controls, _playerHeading, aim);
             var acceleration = GravityAcceleration();
             var angularAcceleration = 0.0f;
             if (_ship is not null)
@@ -304,16 +368,17 @@ public partial class UniverseView : Node2D
 
     public override void _Draw()
     {
-        // 深空背景。
+        // 深空背景（渐变 + 星云 + 星空）由 DeepSpaceBackdrop 子层绘制，位于天体之下。
         // Clear color is owned by the viewport; retained body children draw behind this overlay.
 
-        // 世界空间绘制（星空 + 天体）。
+        // 世界空间绘制（天体标记 + 舰船）。
         DrawSetTransform(new Vector2(ViewWidth, ViewHeight) * 0.5f - _cameraPosition * _cameraZoom, 0.0f, new Vector2(_cameraZoom, _cameraZoom));
         var halfView = new Vector2(ViewWidth, ViewHeight) * 0.5f / _cameraZoom;
         var worldView = new Rect2(_cameraPosition - halfView, halfView * 2);
-        DrawStars(worldView);
         DrawSectorGrid();
         DrawGravityRanges(worldView);
+        DrawTerritoryRanges(worldView);
+        DrawFactoryMarkers(worldView);
         DrawTraffic(worldView);
         DrawCombatWorld(worldView);
         DrawPlayer();
@@ -334,36 +399,163 @@ public partial class UniverseView : Node2D
         DrawWorldOverlays();
     }
 
-    private void DrawStars(Rect2 worldView)
+    /// <summary>深空背景层入口：全屏渐变底 → 星系星云 → 多层闪烁星空（均绘制于天体之下）。</summary>
+    private void DrawDeepSpace(CanvasItem canvas)
+    {
+        canvas.DrawTextureRect(_deepSpaceGradient, new Rect2(Vector2.Zero, new Vector2(ViewWidth, ViewHeight)), false);
+
+        canvas.DrawSetTransform(new Vector2(ViewWidth, ViewHeight) * 0.5f - _cameraPosition * _cameraZoom, 0.0f, new Vector2(_cameraZoom, _cameraZoom));
+        var halfView = new Vector2(ViewWidth, ViewHeight) * 0.5f / _cameraZoom;
+        var worldView = new Rect2(_cameraPosition - halfView, halfView * 2);
+        EnsureNebulae(UniverseGenerator.WorldToSystemCell(_cameraPosition));
+        DrawNebulae(canvas, worldView);
+        DrawStars(canvas, worldView);
+        canvas.DrawSetTransform(Vector2.Zero, 0.0f, Vector2.One);
+    }
+
+    /// <summary>按星系网格确定性生成星云：外围 3~5 团环带云 + 中心弥漫底衬，形成包裹感。</summary>
+    private void EnsureNebulae(Vector2I cell)
+    {
+        if (cell == _nebulaCell) return;
+        _nebulaCell = cell;
+        _nebulae.Clear();
+        for (var dx = -1; dx <= 1; dx++)
+        for (var dy = -1; dy <= 1; dy++)
+        {
+            var c = cell + new Vector2I(dx, dy);
+            var seed = (ulong)((uint)c.X * 3432918353UL ^ (uint)c.Y * 461845907UL);
+            var rng = new Random((int)(seed & 0x7fffffff));
+            var center = UniverseGenerator.SystemCenter(c);
+            var palette = NebulaPalettes[(int)(seed % (ulong)NebulaPalettes.Length)];
+            var count = 3 + rng.Next(3);
+            for (var i = 0; i < count; i++)
+            {
+                var angle = i * Mathf.Tau / count + (float)(rng.NextDouble() - 0.5) * 1.2f;
+                var orbit = UniverseGenerator.SystemRadius * (0.85f + (float)rng.NextDouble() * 0.5f);
+                var radius = UniverseGenerator.SystemRadius * (0.5f + (float)rng.NextDouble() * 0.45f);
+                var position = center + Vector2.Right.Rotated(angle) * orbit;
+                _nebulae.Add(BuildNebulaCloud(position, radius, palette[0], palette[1], rng, 0.10f));
+            }
+            var coreRadius = UniverseGenerator.SystemRadius * (0.55f + (float)rng.NextDouble() * 0.3f);
+            _nebulae.Add(BuildNebulaCloud(center, coreRadius, palette[1], palette[0], rng, 0.07f));
+        }
+    }
+
+    /// <summary>把一团星云打散成 9~14 个随机偏移、随机朝向、拉长的椭圆云絮：絮团低透明度彼此重叠形成雾状，无清晰圆形轮廓。</summary>
+    private static NebulaCloud BuildNebulaCloud(Vector2 position, float radius, Color outer, Color inner, Random rng, float alphaBase)
+    {
+        var blobs = new NebulaBlob[9 + rng.Next(6)];
+        for (var i = 0; i < blobs.Length; i++)
+        {
+            var direction = (float)rng.NextDouble() * Mathf.Tau;
+            var distance = radius * (0.12f + (float)rng.NextDouble() * 0.62f);
+            var offset = Vector2.Right.Rotated(direction) * distance;
+            var blobRadius = radius * (0.16f + (float)rng.NextDouble() * 0.26f);
+            var tint = outer.Lerp(inner, 0.2f + (float)rng.NextDouble() * 0.6f);
+            if (rng.Next(10) == 0) tint = tint.Lerp(Colors.White, 0.15f);
+            blobs[i] = new NebulaBlob(offset, blobRadius,
+                (float)rng.NextDouble() * Mathf.Pi,
+                1.6f + (float)rng.NextDouble() * 1.8f,
+                tint,
+                alphaBase * (0.7f + (float)rng.NextDouble() * 0.6f));
+        }
+        return new NebulaCloud(position, radius, blobs);
+    }
+
+    /// <summary>星云绘制：每个云絮用局部缩放变换画成斜向拉长的椭圆，低透明度叠出絮状雾感。</summary>
+    private void DrawNebulae(CanvasItem canvas, Rect2 worldView)
+    {
+        var zoom = _cameraZoom;
+        var worldOrigin = new Vector2(ViewWidth, ViewHeight) * 0.5f - _cameraPosition * zoom;
+        foreach (var cloud in _nebulae)
+        {
+            if (!worldView.Grow(cloud.Radius).HasPoint(cloud.Position)) continue;
+            foreach (var blob in cloud.Blobs)
+            {
+                var screen = worldOrigin + (cloud.Position + blob.Offset) * zoom;
+                canvas.DrawSetTransform(screen, blob.Rotation,
+                    new Vector2(blob.Radius * blob.Stretch, blob.Radius) * zoom);
+                canvas.DrawCircle(Vector2.Zero, 1.0f, new Color(blob.Tint, blob.Alpha));
+            }
+        }
+        // 恢复世界变换，供后续星空绘制使用。
+        canvas.DrawSetTransform(worldOrigin, 0.0f, new Vector2(zoom, zoom));
+    }
+
+    private void DrawStars(CanvasItem canvas, Rect2 worldView)
     {
         // 用扇区种子生成稳定的星空，让星空随移动平滑流动。
         var sector = UniverseGenerator.WorldToSector(_cameraPosition);
         if (sector != _starSector)
         {
             _backgroundStars.Clear();
+            _classicStars.Clear();
             for (var dx = -2; dx <= 2; dx++)
             for (var dy = -2; dy <= 2; dy++)
             {
                 var s = sector + new Vector2I(dx, dy);
                 var seed = (ulong)((uint)s.X * 73856093UL ^ (uint)s.Y * 19349663UL);
-                var rng = new Random((int)(seed & 0x7fffffff));
-                var count = 18;
+                // 经典星层：原版的 18 颗蓝灰小星（种子即原版种子，位置与旧版一致）。
+                var classicRng = new Random((int)(seed & 0x7fffffff));
+                for (var i = 0; i < 18; i++)
+                {
+                    var local = new Vector2(
+                        (float)(classicRng.NextDouble() - 0.5) * UniverseGenerator.SectorSize,
+                        (float)(classicRng.NextDouble() - 0.5) * UniverseGenerator.SectorSize);
+                    var world = UniverseGenerator.SectorToWorldCenter(s) + local;
+                    var size = classicRng.Next(3) == 0 ? 2.0f : 1.0f;
+                    var brightness = (float)(0.4 + classicRng.NextDouble() * 0.6);
+                    _classicStars.Add(new BackgroundStar(world, size, new Color("#9cb2ce", brightness), 0));
+                }
+                // 彩色闪烁星层：用扰动种子避免与经典星重叠。
+                var rng2 = new Random((int)((seed ^ 0x9e3779b9UL) & 0x7fffffff));
+                var count = 26;
                 for (var i = 0; i < count; i++)
                 {
                     var local = new Vector2(
-                        (float)(rng.NextDouble() - 0.5) * UniverseGenerator.SectorSize,
-                        (float)(rng.NextDouble() - 0.5) * UniverseGenerator.SectorSize);
+                        (float)(rng2.NextDouble() - 0.5) * UniverseGenerator.SectorSize,
+                        (float)(rng2.NextDouble() - 0.5) * UniverseGenerator.SectorSize);
                     var world = UniverseGenerator.SectorToWorldCenter(s) + local;
-                    var size = rng.Next(3) == 0 ? 2.0f : 1.0f;
-                    var brightness = (float)(0.4 + rng.NextDouble() * 0.6);
-                    _backgroundStars.Add(new BackgroundStar(world, size, new Color("#9cb2ce", brightness)));
+                    // 三档星等：多数微尘星，少数亮星，罕见带十字光芒的亮星。
+                    var roll = rng2.NextDouble();
+                    var size = roll < 0.06 ? 2.6f : roll < 0.28 ? 1.7f : 1.1f;
+                    var brightness = (float)(0.45 + rng2.NextDouble() * 0.55);
+                    var tint = StarTints[rng2.Next(StarTints.Length)];
+                    var phase = (float)rng2.NextDouble() * Mathf.Tau;
+                    _backgroundStars.Add(new BackgroundStar(world, size, new Color(tint, brightness), phase));
                 }
             }
             _starSector = sector;
         }
-        var bounds = worldView.Grow(3);
+        var bounds = worldView.Grow(12);
+        var time = (float)Time.GetTicksMsec() * 0.001f;
+        var glowWidth = 0.8f / _cameraZoom;
+        // 经典星层：恒定亮度，先画垫底。
+        foreach (var star in _classicStars)
+            if (bounds.HasPoint(star.Position)) canvas.DrawCircle(star.Position, star.Size, star.Tint);
         foreach (var star in _backgroundStars)
-            if (bounds.HasPoint(star.Position)) DrawCircle(star.Position, star.Size, star.Tint);
+        {
+            if (!bounds.HasPoint(star.Position)) continue;
+            // 微弱闪烁：幅度 28%，相位按星独立。
+            var twinkle = 0.72f + 0.28f * Mathf.Sin(time * 1.6f + star.TwinklePhase);
+            var color = new Color(star.Tint, star.Tint.A * twinkle);
+            canvas.DrawCircle(star.Position, star.Size, color);
+            if (star.Size < 2.2f) continue;
+            // 亮星十字光芒（Reassembly 式尖芒）。
+            var glow = new Color(star.Tint, star.Tint.A * twinkle * 0.4f);
+            var extent = star.Size * 3.5f;
+            canvas.DrawLine(star.Position - new Vector2(extent, 0), star.Position + new Vector2(extent, 0), glow, glowWidth);
+            canvas.DrawLine(star.Position - new Vector2(0, extent), star.Position + new Vector2(0, extent), glow, glowWidth);
+        }
+    }
+
+    /// <summary>深空背景子层：渐变 + 星云 + 星空，绘制于一切天体与前景 UI 之下。</summary>
+    private sealed partial class DeepSpaceLayer : Node2D
+    {
+        private readonly UniverseView _owner;
+        public DeepSpaceLayer(UniverseView owner) => _owner = owner;
+        public override void _Process(double delta) => QueueRedraw();
+        public override void _Draw() => _owner.DrawDeepSpace(this);
     }
 
     private void DrawSectorGrid()
@@ -418,6 +610,23 @@ public partial class UniverseView : Node2D
                 foreach (var rock in cache.AsteroidRocks)
                     canvas.DrawColoredPolygon(rock, new Color("#5a6878", 0.85f));
                 break;
+
+            case UniverseGenerator.CelestialKind.PirateZone:
+                // 海盗空域：暗红危险圈 + 断续警戒环 + 中央警示三角。
+                var zone = new Color(body.ColorHex);
+                canvas.DrawCircle(position, body.Radius, new Color(zone, 0.05f));
+                for (var i = 0; i < 4; i++)
+                    canvas.DrawArc(position, body.Radius, i * Mathf.Tau / 4, i * Mathf.Tau / 4 + Mathf.Tau / 6,
+                        32, new Color(zone, 0.55f), 3f, true);
+                var tri = body.Radius * 0.06f;
+                canvas.DrawColoredPolygon(new[]
+                {
+                    position + Vector2.Up * tri, position + new Vector2(tri * 0.95f, tri * 0.8f),
+                    position + new Vector2(-tri * 0.95f, tri * 0.8f),
+                }, new Color(zone, 0.7f));
+                canvas.DrawCircle(position + Vector2.Up * tri * 0.15f, tri * 0.12f, new Color("#121b24"));
+                canvas.DrawCircle(position + Vector2.Down * tri * 0.42f, tri * 0.1f, new Color("#121b24"));
+                break;
         }
 
     }
@@ -431,8 +640,19 @@ public partial class UniverseView : Node2D
             var point = WorldToScreen(body.Position) + Vector2.Down * (body.Radius * _cameraZoom + 20);
             if (point.X < 96 || point.X > ViewWidth - 96 || point.Y < 80 || point.Y > ViewHeight - 80) continue;
             if (point.X < 310 && point.Y < 230 || MiniMapRect.Grow(20).HasPoint(point)) continue;
-            DrawString(_font, point - new Vector2(95, 0), body.Name, HorizontalAlignment.Center, 190, 12,
-                new Color("#b7c7d4", 0.8f));
+            var labelColor = body.Kind == UniverseGenerator.CelestialKind.PirateZone
+                ? new Color("#d95f5f", 0.9f) : new Color("#b7c7d4", 0.8f);
+            DrawString(_font, point - new Vector2(95, 0), body.Name, HorizontalAlignment.Center, 190, 12, labelColor);
+            // 星球归属标签：显示控制势力，或提示无主星球可认领。
+            if (body.Kind == UniverseGenerator.CelestialKind.Planet && _cameraZoom < 1.4f)
+            {
+                var faction = EffectivePlanetFaction(body);
+                var tag = faction == 0 ? "无主星球 · 可登陆认领 · 领地内可建站" : $"{Progress.Diplomacy.Name(faction)} 领地";
+                var tagColor = faction == 0 ? new Color("#8b9aa8", 0.75f)
+                    : new Color(FactionTint(faction), 0.85f);
+                DrawString(_font, point - new Vector2(110, 0) + new Vector2(0, 16), tag,
+                    HorizontalAlignment.Center, 220, 10, tagColor);
+            }
         }
     }
     private void DrawPlanet(Node2D canvas, UniverseGenerator.CelestialBody body)
@@ -650,6 +870,41 @@ public partial class UniverseView : Node2D
         }
     }
 
+    /// <summary>派系标识色：领土圈、小地图点共用；0（无主）用默认星球绿。</summary>
+    internal static Color FactionTint(int faction) => faction switch
+    {
+        FactionRelations.Player => new Color("#66d9b0"),
+        FactionRelations.League => new Color("#6acbe0"),
+        FactionRelations.Red => new Color("#e06a6a"),
+        FactionRelations.Crystal => new Color("#b48ce0"),
+        FactionRelations.Pirates => new Color("#d95f5f"),
+        4 => new Color("#d6bd7d"),
+        6 => new Color("#8fd66a"),
+        0 => new Color("#5ad4b0"),
+        _ => new Color("#9aa8b5"),
+    };
+
+    private void DrawTerritoryRanges(Rect2 worldView)
+    {
+        // 星球势力范围：派系色领地圈；无主星球不画圈（由标签提示可认领）。
+        foreach (var body in _visibleBodies)
+        {
+            if (body.Kind != UniverseGenerator.CelestialKind.Planet) continue;
+            var faction = EffectivePlanetFaction(body);
+            if (faction == 0) continue;
+            var radius = body.TerritoryRadius;
+            var radiusSquared = radius * radius;
+            var nearest = body.Position.Clamp(worldView.Position, worldView.End);
+            if (nearest.DistanceSquaredTo(body.Position) > radiusSquared) continue;
+            var farthest = (body.Position - worldView.GetCenter()).Abs() + worldView.Size * 0.5f;
+            if (farthest.LengthSquared() < radiusSquared) continue;
+            var color = FactionTint(faction);
+            color.A = body.Id == _targetBody?.Id ? 0.55f : 0.28f;
+            DrawCircle(body.Position, radius, new Color(color, 0.035f));
+            DrawArc(body.Position, radius, 0, Mathf.Tau, 96, color, 1.2f / _cameraZoom, true);
+        }
+    }
+
     private void DrawMiniMapGravityRanges(Rect2 mapRect)
     {
         foreach (var body in _visibleBodies)
@@ -732,9 +987,10 @@ public partial class UniverseView : Node2D
             var inDisk = mapPoint.DistanceSquaredTo(mapCenter) <= radius * radius;
             var dotColor = body.Kind switch
             {
-                UniverseGenerator.CelestialKind.Planet => new Color("#5ad4b0"),
+                UniverseGenerator.CelestialKind.Planet => FactionTint(EffectivePlanetFaction(body)),
                 UniverseGenerator.CelestialKind.Station => ReassemblyUi.CyanHighlight,
                 UniverseGenerator.CelestialKind.Star => new Color("#ffc857"),
+                UniverseGenerator.CelestialKind.PirateZone => new Color("#d95f5f"),
                 _ => new Color("#5a6878"),
             };
 

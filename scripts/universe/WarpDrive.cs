@@ -32,8 +32,10 @@ public sealed class WarpDrive
     public float Progress => State == Phase.Charging ? Elapsed / ChargeSeconds
         : State == Phase.Cooldown ? Elapsed / CooldownSeconds
         : TotalDistance > 0 ? TravelledDistance / TotalDistance : 0;
+    /// <summary>相邻且有已生成的航道才能迁跃；未连通星系需沿航道中转。</summary>
     public static bool InRange(Vector2I source, Vector2I target)
-        => source != target && Math.Abs((long)target.X - source.X) <= 1 && Math.Abs((long)target.Y - source.Y) <= 1;
+        => source != target && Math.Abs((long)target.X - source.X) <= 1 && Math.Abs((long)target.Y - source.Y) <= 1
+           && UniverseGenerator.SystemsLinked(source, target);
     public bool Engage(Vector2I source, Vector2I target, bool hasCore, bool docked, bool surfaceClear,
         IReadOnlyList<Vector2>? route = null)
     {
