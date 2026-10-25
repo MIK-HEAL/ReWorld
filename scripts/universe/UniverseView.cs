@@ -47,11 +47,6 @@ public partial class UniverseView : Node2D
 
     private Font _font = null!;
     private int _bodyRegenCounter;
-    private readonly record struct BackgroundStar(Vector2 Position, float Size, Color Tint, float TwinklePhase);
-    private readonly List<BackgroundStar> _backgroundStars = new(650);
-    /// <summary>经典星层：最初版本的蓝灰小星，不闪烁，与彩色闪烁星叠加增加密度。</summary>
-    private readonly List<BackgroundStar> _classicStars = new(500);
-    private Vector2I _starSector = new(int.MaxValue, int.MaxValue);
 
     /// <summary>深空背景渐变纹理（径向：中心微亮深蓝 → 边缘近黑）。</summary>
     private GradientTexture2D _deepSpaceGradient = null!;
