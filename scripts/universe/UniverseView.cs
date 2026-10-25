@@ -477,70 +477,91 @@ public partial class UniverseView : Node2D
         canvas.DrawSetTransform(worldOrigin, 0.0f, new Vector2(zoom, zoom));
     }
 
+    /// <summary>整数网格哈希 → [0,1)，用于屏幕空间星野的确定性分布（零分配）。</summary>
+    private static float Hash01(int x, int y, int salt)
+    {
+        unchecked
+        {
+            var h = (uint)x * 374761393u + (uint)y * 668265263u + (uint)salt * 2246822519u;
+            h = (h ^ (h >> 13)) * 1274126177u;
+            h ^= h >> 16;
+            return (h & 0xFFFFFF) / (float)0x1000000;
+        }
+    }
+
+    /// <summary>视差星野层定义：滚动系数（越小越远）、瓦片尺寸（px，控制密度）、星半径、单瓦片星数。</summary>
+    private readonly record struct StarLayer(float Parallax, float Tile, float Size, int PerTile, int Salt);
+
+    private static readonly StarLayer[] StarLayers =
+    {
+        // 远层：密集暗星（经典蓝灰），几乎不随相机动 → 深邃感。
+        new(0.06f, 170.0f, 1.0f, 2, 11),
+        // 中层：经典 #9cb2ce 小星，中等密度。
+        new(0.18f, 240.0f, 1.3f, 2, 29),
+        // 近层：彩色亮星，带闪烁与十字光芒。
+        new(0.42f, 340.0f, 1.9f, 1, 53),
+    };
+
+    /// <summary>
+    /// 屏幕空间视差星野：星点按屏幕像素恒定大小/恒定密度绘制，按相机位置多层视差滚动。
+    /// 世界坐标方案下星点会随拉远缩成亚像素且密度被摊薄到整屏个位数，故改为屏幕空间。
+    /// </summary>
     private void DrawStars(CanvasItem canvas, Rect2 worldView)
     {
-        // 用扇区种子生成稳定的星空，让星空随移动平滑流动。
-        var sector = UniverseGenerator.WorldToSector(_cameraPosition);
-        if (sector != _starSector)
+        // 星野绘制在屏幕空间：先重置世界变换。
+        canvas.DrawSetTransform(Vector2.Zero, 0.0f, Vector2.One);
+        var screen = new Vector2(ViewWidth, ViewHeight);
+        var time = (float)Time.GetTicksMsec() * 0.001f;
+        var classic = new Color("#9cb2ce");
+
+        for (var li = 0; li < StarLayers.Length; li++)
         {
-            _backgroundStars.Clear();
-            _classicStars.Clear();
-            for (var dx = -2; dx <= 2; dx++)
-            for (var dy = -2; dy <= 2; dy++)
+            var layer = StarLayers[li];
+            var offset = _cameraPosition * layer.Parallax;
+            var startX = Mathf.FloorToInt(offset.X / layer.Tile) - 1;
+            var startY = Mathf.FloorToInt(offset.Y / layer.Tile) - 1;
+            var endX = Mathf.FloorToInt((offset.X + screen.X) / layer.Tile) + 1;
+            var endY = Mathf.FloorToInt((offset.Y + screen.Y) / layer.Tile) + 1;
+
+            for (var ty = startY; ty <= endY; ty++)
+            for (var tx = startX; tx <= endX; tx++)
             {
-                var s = sector + new Vector2I(dx, dy);
-                var seed = (ulong)((uint)s.X * 73856093UL ^ (uint)s.Y * 19349663UL);
-                // 经典星层：原版的 18 颗蓝灰小星（种子即原版种子，位置与旧版一致）。
-                var classicRng = new Random((int)(seed & 0x7fffffff));
-                for (var i = 0; i < 18; i++)
+                for (var i = 0; i < layer.PerTile; i++)
                 {
-                    var local = new Vector2(
-                        (float)(classicRng.NextDouble() - 0.5) * UniverseGenerator.SectorSize,
-                        (float)(classicRng.NextDouble() - 0.5) * UniverseGenerator.SectorSize);
-                    var world = UniverseGenerator.SectorToWorldCenter(s) + local;
-                    var size = classicRng.Next(3) == 0 ? 2.0f : 1.0f;
-                    var brightness = (float)(0.4 + classicRng.NextDouble() * 0.6);
-                    _classicStars.Add(new BackgroundStar(world, size, new Color("#9cb2ce", brightness), 0));
-                }
-                // 彩色闪烁星层：用扰动种子避免与经典星重叠。
-                var rng2 = new Random((int)((seed ^ 0x9e3779b9UL) & 0x7fffffff));
-                var count = 26;
-                for (var i = 0; i < count; i++)
-                {
-                    var local = new Vector2(
-                        (float)(rng2.NextDouble() - 0.5) * UniverseGenerator.SectorSize,
-                        (float)(rng2.NextDouble() - 0.5) * UniverseGenerator.SectorSize);
-                    var world = UniverseGenerator.SectorToWorldCenter(s) + local;
-                    // 三档星等：多数微尘星，少数亮星，罕见带十字光芒的亮星。
-                    var roll = rng2.NextDouble();
-                    var size = roll < 0.06 ? 2.6f : roll < 0.28 ? 1.7f : 1.1f;
-                    var brightness = (float)(0.45 + rng2.NextDouble() * 0.55);
-                    var tint = StarTints[rng2.Next(StarTints.Length)];
-                    var phase = (float)rng2.NextDouble() * Mathf.Tau;
-                    _backgroundStars.Add(new BackgroundStar(world, size, new Color(tint, brightness), phase));
+                    var salt = layer.Salt + i * 7;
+                    var px = (tx + Hash01(tx, ty, salt)) * layer.Tile - offset.X;
+                    var py = (ty + Hash01(tx, ty, salt + 1)) * layer.Tile - offset.Y;
+                    var pos = new Vector2(px, py);
+
+                    var roll = Hash01(tx, ty, salt + 2);
+                    // 近层用彩色 + 闪烁；中远层用经典蓝灰（亮度随哈希变化）。
+                    Color tint;
+                    float alpha;
+                    if (li == 2)
+                    {
+                        tint = StarTints[(int)(roll * StarTints.Length) % StarTints.Length];
+                        var phase = Hash01(tx, ty, salt + 3) * Mathf.Tau;
+                        var twinkle = 0.7f + 0.3f * Mathf.Sin(time * 1.6f + phase);
+                        alpha = (0.5f + Hash01(tx, ty, salt + 4) * 0.5f) * twinkle;
+                    }
+                    else
+                    {
+                        tint = classic;
+                        alpha = (li == 0 ? 0.3f : 0.45f) + roll * 0.5f;
+                    }
+                    var size = layer.Size * (0.8f + Hash01(tx, ty, salt + 5) * 0.5f);
+                    canvas.DrawCircle(pos, size, new Color(tint, alpha));
+
+                    // 近层 8% 概率亮星：画十字光芒。
+                    if (li == 2 && roll < 0.08f)
+                    {
+                        var glow = new Color(tint, alpha * 0.4f);
+                        var extent = size * 3.5f;
+                        canvas.DrawLine(pos - new Vector2(extent, 0), pos + new Vector2(extent, 0), glow, 0.8f);
+                        canvas.DrawLine(pos - new Vector2(0, extent), pos + new Vector2(0, extent), glow, 0.8f);
+                    }
                 }
             }
-            _starSector = sector;
-        }
-        var bounds = worldView.Grow(12);
-        var time = (float)Time.GetTicksMsec() * 0.001f;
-        var glowWidth = 0.8f / _cameraZoom;
-        // 经典星层：恒定亮度，先画垫底。
-        foreach (var star in _classicStars)
-            if (bounds.HasPoint(star.Position)) canvas.DrawCircle(star.Position, star.Size, star.Tint);
-        foreach (var star in _backgroundStars)
-        {
-            if (!bounds.HasPoint(star.Position)) continue;
-            // 微弱闪烁：幅度 28%，相位按星独立。
-            var twinkle = 0.72f + 0.28f * Mathf.Sin(time * 1.6f + star.TwinklePhase);
-            var color = new Color(star.Tint, star.Tint.A * twinkle);
-            canvas.DrawCircle(star.Position, star.Size, color);
-            if (star.Size < 2.2f) continue;
-            // 亮星十字光芒（Reassembly 式尖芒）。
-            var glow = new Color(star.Tint, star.Tint.A * twinkle * 0.4f);
-            var extent = star.Size * 3.5f;
-            canvas.DrawLine(star.Position - new Vector2(extent, 0), star.Position + new Vector2(extent, 0), glow, glowWidth);
-            canvas.DrawLine(star.Position - new Vector2(0, extent), star.Position + new Vector2(0, extent), glow, glowWidth);
         }
     }
 
